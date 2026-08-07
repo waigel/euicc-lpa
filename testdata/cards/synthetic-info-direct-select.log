@@ -1,0 +1,28 @@
+# A synthetic card session: SELECT the ISD-R, then GetEUICCInfo2, then GetEID.
+# The EUICCInfo2 and GetEuiccDataResponse DER below were produced by the
+# generated encoder, not written by hand -- see testdata/cards/README.md for
+# the program and the exact command that produced them. The SELECT and the
+# STORE DATA framing around each ES10 request/response are hand-assembled,
+# per rsp_es10.c's own citations (SGP.22 v2.6 5.7.2, GPCS 11.1.4/11.11.2).
+#
+# This is the SECONDARY fixture: a SELECT that answers a bare 9000 with no
+# FCI at all, the shape ISO/IEC 7816-4 also permits and rsp_card_select_isdr
+# must still accept. It is not what the project's own test eUICC actually
+# sends -- see omnikey-info.log for that, real hardware bytes, and the
+# fixture the main test_es10.c flow drives. Kept here only so the
+# no-chaining-needed path stays covered too.
+
+# SELECT the ISD-R AID (from the task brief):
+# A0 00 00 05 59 10 10 FF FF FF FF 89 00 00 01 00
+> 00 A4 04 00 10 A0 00 00 05 59 10 10 FF FF FF FF 89 00 00 01 00 00
+< 9000
+
+# GetEUICCInfo2Request ::= [34] SEQUENCE {} -- BF 22 00, one STORE DATA block
+# (3 bytes fits well under the 255-byte limit, so P1 is the last-block form).
+> 80 E2 91 00 03 BF 22 00 00
+< BF226E810302010082030202008303060000840881020100820201008502000088020000A92C04140102030405060708090A0B0C0D0E0F10111213140414AABBCCDDEEFF11223344556677889900A1B2C3D4AA160414999897969594939291908988878685848382818004030201000C00 9000
+
+# GetEuiccDataRequest ::= [62] SEQUENCE { tagList [APPLICATION 28] Octet1 }
+# -- BF 3E 03 5C 01 5A, requesting the eidValue tag ('5A').
+> 80 E2 91 00 06 BF 3E 03 5C 01 5A 00
+< BF3E125A10890330121122334455667788990011FF 9000

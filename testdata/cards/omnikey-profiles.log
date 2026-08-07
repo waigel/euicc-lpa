@@ -1,0 +1,18 @@
+# A euicc-rsp session, recorded by rsp_record_open: one line per
+# direction, hex APDUs (see this project's src/rsp_transport.c for the
+# exact format). This is a log, not something to run.
+#
+# Whether this file is safe to share depends on what was asked of the
+# card during the session it captures, and this header cannot know
+# that in general -- a read-only query (EID, versions, key
+# identifiers) is public; a write session (installing, enabling,
+# deleting a profile) can carry protected material. Check what is
+# actually below before pasting this into an issue.
+> 00A4040010A0000005591010FFFFFFFF890000010000
+< 6121
+> 00C0000021
+< 6F1F8410A0000005591010FFFFFFFF8900000100A5049F6501FFE00582030202009000
+> 80E2910003BF2D0000
+< 6105
+> 00C0000005
+< BF2D02A0009000

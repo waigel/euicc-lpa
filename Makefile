@@ -25,6 +25,16 @@ RSP     := vendor/euicc-rsp
 MBED    := $(RSP)/vendor/mbedtls
 RSPDIST := $(RSP)/dist
 
+# src/rsp_es10.c wipes a growbuf with mbedtls_platform_zeroize (see
+# src/rsp_internal.h), so any test binary that links src/rsp_es10.o now
+# needs these two archives too, the same pair euicc-rsp's own Makefile
+# links tests against. Named directly on each link line below, not listed
+# as a make prerequisite: $(RSP)/librsp.a already forces `make -C $(RSP)`,
+# which builds these as a side effect (build/mbed.stamp, in euicc-rsp's
+# Makefile) before this recipe runs, the same way $(RSPDIST)/*.o below is
+# named in the recipe text rather than declared a prerequisite.
+MBED_LIBS := $(MBED)/library/libmbedx509.a $(MBED)/library/libmbedcrypto.a
+
 # -I$(RSP)/src is for rsp_internal.h, which holds only static inline
 # helpers (rsp_growbuf_t, rsp_der_length_octets) that both sides of the
 # repository split need. Copying it here would be a second implementation
@@ -99,7 +109,7 @@ CHECK_BINS := $(filter-out tests/run-card,$(TEST_BINS))
 # the same reason (VERSION compiled in via -D).
 tests/run-%: tests/test_%.c $(LIB) $(RSP)/librsp.a Makefile
 	$(CC) $(ALL_CFLAGS) -idirafter $(RSPDIST) $< $(LIB) \
-	    $(RSP)/librsp.a $(RSPDIST)/*.o \
+	    $(RSP)/librsp.a $(RSPDIST)/*.o $(MBED_LIBS) \
 	    -o $@ $(PCSC_LIBS) -lm
 	@# On Darwin, a -g link auto-generates a companion run-%.dSYM directory.
 	@# tests/run-tests globs "run-*", so that bundle would be picked up and

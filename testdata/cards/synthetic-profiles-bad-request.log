@@ -1,0 +1,16 @@
+# A deliberately mutated copy of synthetic-profiles.log: one byte of the
+# STORE DATA request's data field changed from 'BF2D00' to 'BF2E00' (a
+# bogus tag no ES10 command uses). rsp_card_read_profiles always sends
+# the real 'BF 2D 00' -- ProfileInfoListRequest, tag 'BF2D', empty body --
+# so replaying this file must refuse that exchange by name rather than
+# hand back an answer for a request nobody actually sent. Exists only to
+# prove replay's own strictness against this round's specific request
+# byte, per tests/test_profiles.c's test_wrong_request_is_refused.
+> 00A4040010A0000005591010FFFFFFFF890000010000
+< 6121
+> 00C0000021
+< 6F1F8410A0000005591010FFFFFFFF8900000100A5049F6501FFE00582030202009000
+> 80E2910003BF2E0000
+< 6168
+> 00C0000068
+< BF2D65A063E34F5A0A8944058925001234567F4F10A00000055910100000000000000000019F70010190064D792053494D910A546573742054656C636F9214546573742054656C636F20506F73747061696400950102E3105A0A8944058925009876543F9F7001009000

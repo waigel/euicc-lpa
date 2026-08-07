@@ -1,0 +1,34 @@
+# One ProfileInfo whose card-chosen text carries every character a JSON
+# string cannot hold raw. profileNickname, serviceProviderName and
+# profileName are UTF8String in rsp-2.5.asn: the card picks their
+# content, this project does not, and euicc-tools' `card profiles --json`
+# embeds all three in its output. So this recording exists to make the
+# escaping in that command's json_string provable rather than merely
+# plausible -- without it, every fixture in this directory happens to
+# hold nothing but plain ASCII letters and spaces, and a json_string that
+# escaped nothing at all would pass the whole suite.
+#
+# The one STORE DATA response is synthetic, produced by the generated
+# der_encode (see this directory's README.md for the throwaway program);
+# the SELECT ISD-R exchange above it is this card's own real FCI, the
+# same bytes every other recording here uses.
+#
+#   profileNickname       He said "hi" \n is not a newline<TAB><0x01>
+#                         -- a quote, a backslash, a tab and a C0
+#                            control with no short JSON escape of its
+#                            own. The literal backslash-n is there to
+#                            catch an escaper that emits it as a real
+#                            newline, or one that leaves it alone when
+#                            the tab beside it needs escaping.
+#   serviceProviderName   Acme<LF>Telco -- an actual newline
+#   profileName           Grüße 日本 -- multi-byte UTF-8, which needs no
+#                         escaping at all and must come back unmangled;
+#                         an escaper that runs per byte would corrupt it.
+> 00A4040010A0000005591010FFFFFFFF890000010000
+< 6121
+> 00C0000021
+< 6F1F8410A0000005591010FFFFFFFF8900000100A5049F6501FFE00582030202009000
+> 80E2910003BF2D0000
+< 615A
+> 00C000005A
+< BF2D57A055E3535A0A8944058925001111111F9F7001019022486520736169642022686922205C6E206973206E6F742061206E65776C696E650901910A41636D650A54656C636F920E4772C3BCC39F6520E697A5E69CAC9501029000
