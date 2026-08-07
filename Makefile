@@ -52,7 +52,13 @@ LIB  := liblpa.a
 # Both headers against every object: every translation unit here reaches
 # one or both, so listing them is an over-approximation, not a guess.
 # Without it, touching include/lpa.h changes nothing make can see.
-$(OBJS): include/lpa.h $(RSP)/include/rsp.h
+#
+# Makefile itself is a prerequisite too: DEF and the rest of ALL_CFLAGS are
+# compiled in, not read at run time, so an edit to a flag here is exactly
+# as invisible to make as an edit to a header would be without the line
+# above -- without this, "make" reuses an object built under the old
+# flags and calls it current.
+$(OBJS): include/lpa.h $(RSP)/include/rsp.h Makefile
 
 .PHONY: all
 all: $(LIB)
@@ -82,7 +88,16 @@ TEST_SRCS  := $(wildcard tests/test_*.c)
 TEST_BINS  := $(patsubst tests/test_%.c,tests/run-%,$(TEST_SRCS))
 CHECK_BINS := $(filter-out tests/run-card,$(TEST_BINS))
 
-tests/run-%: tests/test_%.c $(LIB) $(RSP)/librsp.a
+# Makefile is a prerequisite on purpose: this recipe's own link line lives
+# here, not in test_link.c, so make has no other way to notice that the
+# line changed. GNU Make tracks prerequisite mtimes, not recipe text --
+# without this, removing (or adding back) a library from the link line
+# above leaves the already-built tests/run-% binary looking up to date,
+# and "make check" silently re-runs the old binary instead of relinking.
+# That is a mutation of the test proving nothing, not a passing test: see
+# euicc-tools' Makefile, which takes the same precaution on "euicc" for
+# the same reason (VERSION compiled in via -D).
+tests/run-%: tests/test_%.c $(LIB) $(RSP)/librsp.a Makefile
 	$(CC) $(ALL_CFLAGS) -idirafter $(RSPDIST) $< $(LIB) \
 	    $(RSP)/librsp.a $(RSPDIST)/*.o \
 	    -o $@ $(PCSC_LIBS) -lm
