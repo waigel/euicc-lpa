@@ -1,0 +1,6 @@
+*.o
+*.a
+tests/run-*
+!tests/run-tests
+.DS_Store
+.idea/

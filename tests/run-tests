@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs every test binary in this directory and sums the verdicts. The
+# binaries print their own ok/FAIL lines; this only decides the exit code.
+set -u
+here=$(dirname "$0")
+status=0
+for t in "$here"/run-*; do
+    [ -x "$t" ] || continue
+    # "run-*" matches this script's own name. Without this guard the loop
+    # invokes itself and recurses until fork() fails.
+    [ "$(basename "$t")" = "run-tests" ] && continue
+    # run-card needs a real reader. make check does not build it, but a
+    # binary left over from "make check-card" would still be in this glob.
+    [ "$(basename "$t")" = "run-card" ] && continue
+    "$t" || status=1
+done
+exit $status
