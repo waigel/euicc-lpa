@@ -69,6 +69,15 @@ LIB  := liblpa.a
 # as invisible to make as an edit to a header would be without the line
 # above -- without this, "make" reuses an object built under the old
 # flags and calls it current.
+#
+# This rule is also the first target GNU Make finds in this file, which
+# would make it the default goal -- bare "make" would build only the
+# first of $(OBJS) and stop, not the library "all" documents at the top.
+# euicc-rsp's own Makefile hit the same shape once (see its comment on
+# .DEFAULT_GOAL) and fixed it the same way: state the intended default
+# goal explicitly, so file order stops deciding it by accident.
+.DEFAULT_GOAL := all
+
 $(OBJS): include/lpa.h $(RSP)/include/rsp.h Makefile
 
 .PHONY: all
@@ -87,7 +96,16 @@ $(RSP)/librsp.a: rsp-force
 	    exit 1; }
 	$(MAKE) -C $(RSP) $(if $(ASN1C),ASN1C="$(ASN1C)") $(if $(SKELDIR),SKELDIR="$(SKELDIR)")
 
-%.o: %.c
+# $(RSP)/librsp.a here, not just as a tests/run-% prerequisite: euicc-rsp's
+# own Makefile generates dist/ (rsp_es10.c's EUICCInfo2.h and the rest) as
+# a side effect of building librsp.a, and every object here compiles
+# against that generated codec via -idirafter $(RSPDIST) below. Without
+# this, "make" (or "make all") alone in a fresh checkout failed compiling
+# src/rsp_es10.c on a missing generated header, because nothing had asked
+# euicc-rsp to generate it yet -- only "make check" (whose tests/run-%
+# rule already lists $(RSP)/librsp.a) happened to paper over the gap, by
+# building the codec before linking a test, too late to help $(LIB) itself.
+%.o: %.c $(RSP)/librsp.a
 	$(CC) $(ALL_CFLAGS) -idirafter $(RSPDIST) -c $< -o $@
 
 $(LIB): $(OBJS)
