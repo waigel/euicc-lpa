@@ -3,6 +3,7 @@
 #     make          the library
 #     make check    the tests that need no reader
 #     make check-card   the tests that need a real card in a reader
+#     make record-card  capture a real session into a new testdata/cards fixture
 #     make clean    everything the build produced
 #
 # This library stands on euicc-rsp for two things: its crypto and PKI
@@ -124,6 +125,45 @@ check: $(CHECK_BINS)
 .PHONY: check-card
 check-card: tests/run-card
 	./tests/run-card
+
+# Captures a session against the real reader TWICE and only writes OUT if
+# both agree, byte for byte. testdata/cards/README.md's own review found a
+# live capture desync once in fourteen attempts on this project's shared
+# rig -- SCardConnect in shared mode does not force a cold reset, so
+# leftover state from whatever last touched the card can bleed into a
+# capture. That is invisible by looking at the file afterward: a desynced
+# recording still parses, still replays, and reads exactly like a good
+# one, right up until it is trusted as ground truth for what the card
+# actually said. Two independent captures agreeing is the cheapest check
+# available that does not require a person to already know what the right
+# answer looks like. Moved here from euicc-rsp with the rest of the card
+# side: it captures through tests/run-card, which is built here now.
+#
+# OUT defaults to a scratch path under /tmp rather than committing anything
+# by default -- this is a capture tool, not a promise that its result
+# belongs in testdata/cards/. Point OUT at a real destination to keep one:
+#   make record-card OUT=testdata/cards/card.log
+OUT ?= /tmp/rsp-record-card.log
+
+.PHONY: record-card
+record-card: tests/run-card
+	@out="$(OUT)"; \
+	 tmp1=$$(mktemp) && tmp2=$$(mktemp) || exit 1; \
+	 trap 'rm -f "$$tmp1" "$$tmp2"' EXIT; \
+	 echo "record-card: capture 1/2..."; \
+	 ./tests/run-card "$$tmp1" || { echo "record-card: first capture failed" >&2; exit 1; }; \
+	 echo "record-card: capture 2/2..."; \
+	 ./tests/run-card "$$tmp2" || { echo "record-card: second capture failed" >&2; exit 1; }; \
+	 if ! cmp -s "$$tmp1" "$$tmp2"; then \
+	     echo "record-card: the two captures do not agree -- not writing $$out" >&2; \
+	     echo "record-card: (a shared reader can desync between passes;" >&2; \
+	     echo "record-card:  see testdata/cards/README.md); try again" >&2; \
+	     diff -u "$$tmp1" "$$tmp2" >&2 || true; \
+	     exit 1; \
+	 fi; \
+	 mkdir -p "$$(dirname "$$out")"; \
+	 cp "$$tmp1" "$$out"; \
+	 echo "record-card: wrote $$out, confirmed by two agreeing captures"
 
 .PHONY: clean
 clean:
