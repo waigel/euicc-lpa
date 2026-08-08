@@ -35,8 +35,7 @@ needs them; euicc-rsp no longer touches PC/SC at all.
 
 The one target that is not provable without hardware: it needs a real card
 reader with a test eUICC in it, over PC/SC. It is not part of `make check`
-and CI never runs it, for the same reason euicc-rsp excludes its own: there
-is no reader attached to a CI runner.
+and CI never runs it: there is no reader attached to a CI runner.
 
 ## `make record-card`
 

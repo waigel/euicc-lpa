@@ -20,7 +20,7 @@
  *
  * A "< " line has one more shape besides hex: "< !-1" or "< !-2" records
  * that the exchange itself failed -- transceive returned that negative
- * value instead of a response, per include/rsp.h's failure convention --
+ * value instead of a response, per include/lpa.h's failure convention --
  * rather than that the card answered with zero bytes. rsp_record_open
  * writes this marker whenever the transport it wraps returns negative,
  * and rsp_replay_open turns it straight back into the same negative
@@ -112,7 +112,7 @@ static void print_hex(FILE *f, const uint8_t *b, size_t n)
 
 /* s/slen is a "< " line's content, already past the "< " prefix. Returns
  * 0 and sets *code if it is exactly the failure marker "!-1" or "!-2" (the
- * only two negative values include/rsp.h's convention allows). Returns -1
+ * only two negative values include/lpa.h's convention allows). Returns -1
  * if it does not even start with '!' -- not a marker at all, so the
  * caller should try parsing it as hex instead. Returns -2 if it starts
  * with '!' but is not one of the two recognized markers, which the
@@ -136,7 +136,7 @@ typedef struct {
      * resp_len hold the recorded answer (resp non-NULL even when
      * resp_len is 0, so free() is always valid). Otherwise fail_code is
      * the negative value transceive returned instead of a response
-     * (-1 or -2, include/rsp.h's convention), resp is NULL and resp_len
+     * (-1 or -2, include/lpa.h's convention), resp is NULL and resp_len
      * is 0: the "< !-1" / "< !-2" marker line, see the file header. */
     long     fail_code;
     uint8_t *resp;
@@ -378,7 +378,7 @@ static long record_transceive(rsp_transport_t *t, const uint8_t *cmd,
 {
     rsp_record_state_t *st = t->ctx;
     /* rsp_record_open copies *inner by value (its own doc comment,
-     * include/rsp.h), so a caller that passed a half-built rsp_transport_t
+     * include/lpa.h), so a caller that passed a half-built rsp_transport_t
      * -- transceive left NULL -- reaches this call with no chance for
      * rsp_record_open itself to have caught it. src/rsp_pcsc.c's own
      * transceive checks its arguments the same defensive way; there is
@@ -394,7 +394,7 @@ static long record_transceive(rsp_transport_t *t, const uint8_t *cmd,
         /* The exchange itself failed -- write the marker rsp_replay_open
          * turns back into this same negative return, not a blank line
          * that would replay as a fake zero-length success. See the file
-         * header and include/rsp.h's comment on rsp_record_open. */
+         * header and include/lpa.h's comment on rsp_record_open. */
         fprintf(st->f, "!%ld", n);
     } else if (n > 0) {
         print_hex(st->f, resp, (size_t)n);
@@ -434,7 +434,7 @@ static void record_close(rsp_transport_t *t)
  * and nobody should paste one into an issue without a line in the file
  * itself saying so. */
 static const char RECORDING_HEADER[] =
-    "# A euicc-rsp session, recorded by rsp_record_open: one line per\n"
+    "# A euicc-lpa session, recorded by rsp_record_open: one line per\n"
     "# direction, hex APDUs (see this project's src/rsp_transport.c for the\n"
     "# exact format). This is a log, not something to run.\n"
     "#\n"

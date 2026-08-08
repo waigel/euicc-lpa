@@ -1,5 +1,9 @@
 # Everything here runs without a card reader. That is the point of the first
-# half of this project: the crypto is provable on a plain runner.
+# half of this project: the transport, the ES10 command layer, and the
+# read-only card commands are all provable on a plain runner, against a
+# recording rather than hardware; only check-card, which this workflow never
+# runs, needs a reader. The crypto and PKI those commands build on live in
+# the euicc-rsp submodule and are proved by that project's own CI, not here.
 name: ci
 
 on:
@@ -46,7 +50,7 @@ jobs:
       # though check-card -- the only thing that actually opens a reader --
       # never runs here: this runner has none. libpcsclite-dev is still
       # needed just to compile that file and link the PC/SC symbols into
-      # librsp.a. Unlike the asn1c step above, this one is not gated by a
+      # liblpa.a. Unlike the asn1c step above, this one is not gated by a
       # cache hit: it must run every time, cache or no cache.
       - name: install pcsc-lite headers
         run: |

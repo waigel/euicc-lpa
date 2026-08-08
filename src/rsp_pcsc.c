@@ -18,7 +18,7 @@
  *
  * PC/SC's own functions return a signed LONG; every nonzero value is a
  * failure and SCARD_S_SUCCESS (0) is the only success. This file only ever
- * surfaces two of the numbers rsp.h defines: 0 for done, and -2 for "the
+ * surfaces two of the numbers lpa.h defines: 0 for done, and -2 for "the
  * exchange could not happen" -- transceive's own -1 ("the card answered
  * something unusable") is reserved for an answer that arrived and made no
  * sense, which is not something PC/SC's return code, only the response
@@ -150,7 +150,7 @@ static long pcsc_transceive(rsp_transport_t *t, const uint8_t *cmd,
 
     /* An APDU response always carries its two status bytes; anything
      * shorter is not a response this transport can hand back as one --
-     * rsp.h's -1, an answer that arrived but made no sense, not this
+     * lpa.h's -1, an answer that arrived but made no sense, not this
      * function's -2. */
     if (recv_len < 2) return -1;
     return (long)recv_len;
@@ -241,8 +241,23 @@ int rsp_pcsc_open(const char *reader, rsp_transport_t *out)
     SCARDCONTEXT ctx;
     LONG rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
     if (rv != SCARD_S_SUCCESS) {
-        fprintf(stderr, "rsp_pcsc: cannot reach the system's smart card "
-                         "service: %s\n", pcsc_stringify_error(rv));
+        /* Whatever is down -- pcscd, the macOS daemon, the whole stack --
+         * this is the one SCardEstablishContext a caller-supplied reader
+         * name actually reaches (rsp_pcsc_readers' own call, above, never
+         * sees a reader argument at all). "The service is unreachable" is
+         * still the honest diagnosis: naming the reader on top of it, when
+         * one was asked for, does not paper over that, it just means a
+         * caller who named a reader hears the name back too, instead of a
+         * message that looks -- to a test, or to a person -- like it
+         * forgot what was asked. */
+        if (reader) {
+            fprintf(stderr, "rsp_pcsc: cannot reach the system's smart card "
+                             "service (asked for reader \"%s\"): %s\n",
+                             reader, pcsc_stringify_error(rv));
+        } else {
+            fprintf(stderr, "rsp_pcsc: cannot reach the system's smart card "
+                             "service: %s\n", pcsc_stringify_error(rv));
+        }
         return -2;
     }
 

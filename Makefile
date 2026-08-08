@@ -111,8 +111,9 @@ $(RSP)/librsp.a: rsp-force
 $(LIB): $(OBJS)
 	ar rcs $@ $(OBJS)
 
-# run-card needs a reader and is excluded from "make check" here, the same
-# way euicc-rsp excludes its own.
+# run-card needs a reader and is excluded from "make check" here -- the
+# card side lives only in this repo now, so there is no other Makefile
+# left to share the exclusion with.
 TEST_SRCS  := $(wildcard tests/test_*.c)
 TEST_BINS  := $(patsubst tests/test_%.c,tests/run-%,$(TEST_SRCS))
 CHECK_BINS := $(filter-out tests/run-card,$(TEST_BINS))
@@ -183,6 +184,22 @@ record-card: tests/run-card
 	 cp "$$tmp1" "$$out"; \
 	 echo "record-card: wrote $$out, confirmed by two agreeing captures"
 
-.PHONY: clean
+.PHONY: clean distclean
 clean:
-	rm -f $(OBJS) $(LIB) $(TEST_BINS)
+	rm -f $(OBJS) $(LIB)
+	@# Not "rm -f $(TEST_BINS)": $(TEST_BINS) is derived from the test
+	@# sources that exist right now, so a binary left over from a test that
+	@# was since renamed or deleted would not be in that list at all, would
+	@# survive "make clean", and tests/run-tests (which globs "run-*", not
+	@# $(TEST_BINS)) would go on running and reporting it. Match run-tests'
+	@# own glob here instead, with the same "run-tests" exclusion it uses
+	@# on itself, so a clean tree and a stale binary cannot coexist. (Same
+	@# fix as euicc-rsp's own Makefile.)
+	@for f in tests/run-*; do \
+	    [ -e "$$f" ] || continue; \
+	    [ "$$(basename "$$f")" = "run-tests" ] && continue; \
+	    rm -f "$$f"; \
+	done
+
+distclean: clean
+	$(MAKE) -C $(RSP) clean 2>/dev/null || true

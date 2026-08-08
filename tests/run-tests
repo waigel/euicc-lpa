@@ -1,9 +1,15 @@
 #!/bin/sh
-# Runs every test binary in this directory and sums the verdicts. The
-# binaries print their own ok/FAIL lines; this only decides the exit code.
+# Runs every test binary in this directory and sums the verdicts. Each
+# binary prints its own "ok  "/"FAIL" lines to stdout; this runner passes
+# that output through unchanged, counts it, and prints a summary of its
+# own -- a blank grep floor elsewhere (grep -c '^ok') cannot tell "127 ok"
+# from "found nothing to grep," so the summary line below is printed even
+# when it is 0 ok, 0 failed.
 set -u
 here=$(dirname "$0")
 status=0
+pass=0
+fail=0
 for t in "$here"/run-*; do
     [ -x "$t" ] || continue
     # "run-*" matches this script's own name. Without this guard the loop
@@ -12,6 +18,10 @@ for t in "$here"/run-*; do
     # run-card needs a real reader. make check does not build it, but a
     # binary left over from "make check-card" would still be in this glob.
     [ "$(basename "$t")" = "run-card" ] && continue
-    "$t" || status=1
+    out=$("$t") || status=1
+    printf '%s\n' "$out"
+    pass=$((pass + $(printf '%s\n' "$out" | grep -c '^ok')))
+    fail=$((fail + $(printf '%s\n' "$out" | grep -c '^FAIL')))
 done
+printf '\n%d ok, %d failed\n' "$pass" "$fail"
 exit $status

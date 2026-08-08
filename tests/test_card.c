@@ -22,7 +22,7 @@ static int open_maybe_recorded(const char *path, rsp_transport_t *out) {
     if(rc != 0) { fprintf(stderr, "cannot open the card: %d\n", rc); return rc; }
     if(!path) { *out = raw; return 0; }
     /* rsp_record_open takes ownership of raw: it must not be closed
-       separately afterward (include/rsp.h). */
+       separately afterward (include/lpa.h). */
     rc = rsp_record_open(&raw, path, out);
     if(rc != 0) {
         fprintf(stderr, "cannot open the recording %s: %d\n", path, rc);

@@ -63,7 +63,7 @@
  * execution of the APDU command SHALL be indicated by the status bytes
  * '90 00' if no proactive command is pending and by '91 XX' if a proactive
  * command (e.g., REFRESH) is pending." This function's contract (see
- * rsp.h) only treats a bare '90 00' as the terminal success and anything
+ * lpa.h) only treats a bare '90 00' as the terminal success and anything
  * that is not '90 00' or '61xx' as a refusal reported through *sw -- so a
  * '91 XX' (a real, spec-defined success that also signals a pending
  * proactive command) reads as a refusal here. That is narrower than
@@ -81,7 +81,7 @@
  * this rule's source.) A bare '90 00' is therefore the only response an
  * intermediate block may legitimately receive; a '90 00' that arrives
  * with a data field anyway is the card breaking that rule, not a status
- * this function's caller can reason about through *sw the way rsp.h
+ * this function's caller can reason about through *sw the way lpa.h
  * documents it (a genuine refusal status) -- so that case is reported as
  * -2, same as any other exchange that could not happen, not as -1 with
  * *sw holding the paradox of "refused, status 9000".
@@ -178,9 +178,9 @@
  * not terminate within CHAIN_MAX_RESPONSE/CHAIN_MAX_GETRESP.
  *
  * transceive's own -1/-2 is not re-decided here, it is passed straight
- * through: n < 0 is exactly what the transport already concluded (rsp.h's
+ * through: n < 0 is exactly what the transport already concluded (lpa.h's
  * struct comment on transceive), and re-deciding it as a flat -2 -- as
- * this used to do -- would erase the one distinction include/rsp.h
+ * this used to do -- would erase the one distinction include/lpa.h
  * documents for this function's caller (-1 "the card said no" vs. -2 "we
  * could not ask"), the same distinction rsp_transport.c's three transceive
  * implementations were just made to agree on. Only a positive-but-short
@@ -326,7 +326,7 @@ int rsp_es10_send(rsp_transport_t *t, const uint8_t *req, size_t req_len,
                 /* The card said success but attached a data field
                  * anyway -- section 5.7.6 forbids that for an
                  * intermediate block, so this is the card breaking the
-                 * protocol, not a status rsp.h's *sw contract can carry
+                 * protocol, not a status lpa.h's *sw contract can carry
                  * ("*sw set to that status" only applies to the -1 case,
                  * a genuine refusal). Reporting -1 with *sw = 0x9000
                  * would read as "refused, status: success", which the
@@ -468,7 +468,7 @@ int rsp_card_read_info(rsp_transport_t *t, rsp_card_info_t *out, int *no_isdr)
 
     size_t n = (size_t)info2->euiccCiPKIdListForVerification.list.count;
     if (n > 0) {
-        /* rsp_card_info_t's own contract (include/rsp.h) is a single
+        /* rsp_card_info_t's own contract (include/lpa.h) is a single
            ci_id_len for every entry in ci_ids; a card whose list is not
            actually uniform cannot be represented that way, so that shape
            is treated the same as any other answer this function cannot

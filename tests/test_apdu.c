@@ -201,7 +201,7 @@ int main(void) {
     /* An intermediate block's response must never carry a data field
        (SGP.22 v2.6 section 5.7.6, "Response Data"), even alongside a
        bare 9000 -- a card that does this is breaking the protocol, and
-       include/rsp.h ties -1's *sw strictly to a genuine refusal status,
+       include/lpa.h ties -1's *sw strictly to a genuine refusal status,
        so reporting -1 with *sw == 0x9000 would say "refused, status:
        success", a contradiction the caller cannot act on. The right
        answer is -2, same as any other exchange that could not happen,

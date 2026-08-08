@@ -111,7 +111,7 @@ int main(void) {
        exhausted recording is "we could not ask", -2, per finding E's
        later pass that made replay's exhaustion/mismatch/buffer-too-small
        cases agree with PC/SC's own -2 for the same class of failure
-       (include/rsp.h's failure convention) -- the same shape a real card
+       (include/lpa.h's failure convention) -- the same shape a real card
        refusing something during a live session (Task 5) will take. */
     {
         const char *shortpath = "/tmp/rsp-test-one-exchange.log";
