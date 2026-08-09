@@ -113,6 +113,8 @@
 #include "ProfileInfoListResponse.h"
 #include "ProfileInfoListError.h"
 #include "ProfileInfo.h"
+#include "GetEuiccChallengeResponse.h"
+#include "DeleteProfileResponse.h"
 
 #define ES10_MAX_BLOCK 255u  /* SGP.22 v2.6 section 2.5.5 / 5.7.6 */
 
@@ -739,4 +741,227 @@ void rsp_card_profiles_free(rsp_profile_info_t *profiles, size_t count)
         free(profiles[k].profile_name);
     }
     free(profiles);
+}
+
+/*
+ * rsp_card_get_challenge -- ES10b GetEUICCChallenge, SGP.22 v2.6 section
+ * 5.7.7. GetEuiccChallengeRequest is an empty SEQUENCE, so the request is
+ * three constant bytes and there is nothing for an encoder to get wrong.
+ * The response is one Octet16, which the eUICC generated at random and
+ * will sign later; this function only carries it back.
+ */
+
+static const uint8_t es10_challenge_req[] = { 0xBF, 0x2E, 0x00 };
+
+int rsp_card_get_challenge(rsp_transport_t *t, uint8_t out[16], int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (!t || !t->transceive || !out) return -2;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    unsigned sw = 0;
+    rc = rsp_es10_send(t, es10_challenge_req, sizeof es10_challenge_req,
+                       &resp, &resp_len, &sw);
+    if (rc != 0) return rc;
+
+    GetEuiccChallengeResponse_t *r = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_GetEuiccChallengeResponse,
+                                   (void **)&r, resp, resp_len);
+    free(resp);
+    if (dr.code != RC_OK || !r) {
+        if (r) ASN_STRUCT_FREE(asn_DEF_GetEuiccChallengeResponse, r);
+        return -2;
+    }
+
+    /* Octet16 is SIZE(16), but ber_decode does not enforce SIZE
+       constraints (see this file's own note on EUICCInfo2's svn), so the
+       length is checked here rather than assumed. A short challenge that
+       silently left the rest of out uninitialised would be signed by the
+       card and rejected by nothing until much later. */
+    if (r->euiccChallenge.size != 16) {
+        ASN_STRUCT_FREE(asn_DEF_GetEuiccChallengeResponse, r);
+        return -2;
+    }
+    memcpy(out, r->euiccChallenge.buf, 16);
+    ASN_STRUCT_FREE(asn_DEF_GetEuiccChallengeResponse, r);
+    return 0;
+}
+
+/*
+ * rsp_card_delete_profile -- ES10c DeleteProfile, SGP.22 v2.6 section
+ * 5.7.18. DeleteProfileRequest is a CHOICE of isdpAid or iccid; this
+ * always sends the iccid alternative, since that is what a person types
+ * and what `euicc card profiles` prints. The response carries a single
+ * INTEGER, and the difference between its values is the whole point --
+ * "not found" and "still enabled" send a reader to entirely different
+ * places, so the caller gets the value rather than a flattened failure.
+ */
+
+int rsp_card_delete_profile(rsp_transport_t *t, const uint8_t iccid[10],
+                            long *result, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (result) *result = 0;
+    if (!t || !t->transceive || !iccid) return -2;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    /* BF 33 0C 5A 0A <10 bytes>: the [51] CHOICE wrapper, then Iccid's own
+       APPLICATION 26 tag '5A' and its ten octets. Written out rather than
+       assembled through the generated encoder for the same reason the two
+       fixed requests above are -- there is nothing an encoder could get
+       right that fifteen constant-shaped bytes get wrong. */
+    uint8_t req[15];
+    req[0] = 0xBF; req[1] = 0x33; req[2] = 0x0C;
+    req[3] = 0x5A; req[4] = 0x0A;
+    memcpy(req + 5, iccid, 10);
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    unsigned sw = 0;
+    rc = rsp_es10_send(t, req, sizeof req, &resp, &resp_len, &sw);
+    if (rc != 0) return rc;
+
+    DeleteProfileResponse_t *r = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_DeleteProfileResponse,
+                                   (void **)&r, resp, resp_len);
+    free(resp);
+    if (dr.code != RC_OK || !r) {
+        if (r) ASN_STRUCT_FREE(asn_DEF_DeleteProfileResponse, r);
+        return -2;
+    }
+
+    long v = r->deleteResult;
+    ASN_STRUCT_FREE(asn_DEF_DeleteProfileResponse, r);
+
+    if (v == 0) return 0;
+    if (result) *result = v;
+    return -1;
+}
+
+/*
+ * The three ES10b exchanges whose request this library does not build.
+ *
+ * AuthenticateServer (SGP.22 v2.6 section 5.7.13) and PrepareDownload
+ * (section 5.7.5) both carry a structure the SM-DP+ produced and signed --
+ * ServerSigned1 with its signature and certificate, SmdpSigned2 with
+ * hers. The LPA's job is to carry them to the card and carry the answer
+ * back, not to understand them: it cannot check those signatures (it has
+ * no key to check them against) and it must not alter a byte, because
+ * the card verifies exactly what was signed. So these two take the
+ * encoded request as given and hand back the encoded response.
+ *
+ * That is also why they have no *no_isdr out-parameter of their own
+ * beyond the shared one: by the time either is called the ISD-R has
+ * already answered a challenge, so a refusal here is about the exchange,
+ * not about finding the applet.
+ */
+
+static int es10_passthrough(rsp_transport_t *t,
+                             const uint8_t *req, size_t req_len,
+                             uint8_t **out, size_t *out_len, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (!t || !t->transceive || !req || req_len == 0 || !out || !out_len) {
+        return -2;
+    }
+    *out = NULL;
+    *out_len = 0;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    unsigned sw = 0;
+    return rsp_es10_send(t, req, req_len, out, out_len, &sw);
+}
+
+int rsp_card_authenticate_server(rsp_transport_t *t,
+                                  const uint8_t *req, size_t req_len,
+                                  uint8_t **out, size_t *out_len,
+                                  int *no_isdr)
+{
+    return es10_passthrough(t, req, req_len, out, out_len, no_isdr);
+}
+
+int rsp_card_prepare_download(rsp_transport_t *t,
+                               const uint8_t *req, size_t req_len,
+                               uint8_t **out, size_t *out_len,
+                               int *no_isdr)
+{
+    return es10_passthrough(t, req, req_len, out, out_len, no_isdr);
+}
+
+/*
+ * rsp_card_get_info1 -- ES10b GetEUICCInfo (SGP.22 v2.6 section 5.7.8),
+ * the euiccInfo1 half. GetEuiccInfo1Request is an empty SEQUENCE, so the
+ * request is three constant bytes.
+ *
+ * The response is handed back encoded rather than decoded, because its
+ * only consumer is InitiateAuthentication, which needs the bytes as the
+ * card sent them: euiccInfo1 goes into what the SM-DP+ signs, and a
+ * decode-then-re-encode round trip is exactly the kind of thing that
+ * changes a byte and breaks a signature for no visible reason.
+ */
+
+static const uint8_t es10_info1_req[] = { 0xBF, 0x20, 0x00 };
+
+int rsp_card_get_info1(rsp_transport_t *t, uint8_t **out, size_t *out_len,
+                       int *no_isdr)
+{
+    return es10_passthrough(t, es10_info1_req, sizeof es10_info1_req,
+                            out, out_len, no_isdr);
+}
+
+/*
+ * rsp_card_cancel_session -- ES10b CancelSession, SGP.22 v2.6 section
+ * 5.7.14. This is the way out of a failed install: section 5.5.1 has the
+ * eUICC reject InitialiseSecureChannel while an RSP session is already
+ * ongoing, so without this one botched attempt blocks every later one.
+ * CancelSessionReason has loadBppExecutionError(5) for exactly that case.
+ *
+ * The eUICC verifies that the transactionId is the one it is holding and
+ * answers invalidTransactionId otherwise, which is why this cannot clear
+ * a session stranded by a crash: a fresh run does not know the id. That
+ * limit is real and belongs in whatever documents the command.
+ */
+
+int rsp_card_cancel_session(rsp_transport_t *t,
+                             const uint8_t transaction_id[16], long reason,
+                             int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (!t || !t->transceive || !transaction_id) return -2;
+    if (reason < 0 || reason > 127) return -2;
+
+    /* BF 41 15 80 10 <16 bytes> 81 01 <reason>: the [65] SEQUENCE, then
+       transactionId and reason under AUTOMATIC TAGS' [0] and [1]. */
+    uint8_t req[24];
+    req[0] = 0xBF; req[1] = 0x41; req[2] = 0x15;
+    req[3] = 0x80; req[4] = 0x10;
+    memcpy(req + 5, transaction_id, 16);
+    req[21] = 0x81; req[22] = 0x01; req[23] = (uint8_t)reason;
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    int rc = es10_passthrough(t, req, sizeof req, &resp, &resp_len, no_isdr);
+    /* The response carries a signed structure the SM-DP+ would want in a
+       real cancellation flow; this round only needs the session gone, so
+       it is freed unread -- the same way rsp_card_select_isdr discards a
+       SELECT's FCI. Whoever adds ES9+.CancelSession will want it. */
+    free(resp);
+    return rc;
 }

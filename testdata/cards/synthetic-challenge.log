@@ -1,0 +1,18 @@
+# GetEUICCChallenge (ES10b, SGP.22 v2.6 section 5.7.7), hand-built.
+#
+# The challenge is sixteen bytes the eUICC picks at random, so a capture
+# of a real one would pin nothing about this code -- any sixteen bytes
+# would do. These are 00..0F, chosen to be recognisable, which is also
+# what lets the test assert the exact value rather than only the length:
+# a decoder that returned the right count of the wrong bytes would pass
+# a length check and fail this.
+#
+# The SELECT ISD-R exchange is this project's own test card's real FCI.
+> 00A4040010A0000005591010FFFFFFFF890000010000
+< 6121
+> 00C0000021
+< 6F1F8410A0000005591010FFFFFFFF8900000100A5049F6501FFE00582030202009000
+> 80E2910003BF2E0000
+< 6115
+> 00C0000015
+< BF2E128010000102030405060708090A0B0C0D0E0F9000

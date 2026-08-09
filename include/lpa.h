@@ -213,4 +213,82 @@ int rsp_card_read_profiles(rsp_transport_t *t, rsp_profile_info_t **out,
    NULL (whether or not count is 0) and safe on a zeroed array. */
 void rsp_card_profiles_free(rsp_profile_info_t *profiles, size_t count);
 
+/* Ask the eUICC for a challenge (ES10b GetEUICCChallenge, SGP.22 v2.6
+   section 5.7.7). The card generates sixteen random bytes and signs them
+   later, which is how it satisfies itself that the server answered this
+   challenge rather than a recorded one.
+
+   This is the one ES10 command in this header whose answer is meant to
+   differ on every call. A recording replays whatever was captured, which
+   is right for a replay -- the point is that a session's bytes are the
+   ones actually exchanged -- but it means an assertion that two calls
+   differ cannot be driven from one.
+
+   Returns 0 with out filled. -1 when the card answered and refused, with
+   *no_isdr set to 1 if the ISD-R selection itself was refused. -2 when
+   the exchange could not happen or the answer could not be decoded. */
+int rsp_card_get_challenge(rsp_transport_t *t, uint8_t out[16], int *no_isdr);
+
+/* Delete a profile by ICCID (ES10c DeleteProfile, SGP.22 v2.6 section
+   5.7.18). This is what makes an install repeatable: without it every
+   attempt during development burns a slot.
+
+   The card refuses an enabled profile -- 5.7.18 has the eUICC check the
+   state and the Profile Policy Rules first and answer with an error
+   rather than deleting. A freshly installed profile is disabled, so this
+   reaches the case that matters; a profile that somehow becomes enabled
+   cannot be removed with this alone.
+
+   Returns 0 when the card answered ok(0). -1 when it answered and
+   refused, with *result set to which refusal: iccidOrAidNotFound(1),
+   profileNotInDisabledState(2), disallowedByPolicy(3) or
+   undefinedError(127) (dist/DeleteProfileResponse.h). *result is left at
+   0 on every other outcome, success included; read it only after -1.
+   -2 when the exchange could not happen or the answer could not be
+   decoded. no_isdr follows rsp_card_read_info's convention. */
+int rsp_card_delete_profile(rsp_transport_t *t, const uint8_t iccid[10],
+                            long *result, int *no_isdr);
+
+/* The three exchanges whose request this library does not build.
+   AuthenticateServer (SGP.22 v2.6 section 5.7.13) and PrepareDownload
+   (section 5.7.5) carry a structure the SM-DP+ produced and signed; the
+   LPA carries it to the card and the answer back, and must not alter a
+   byte, because the card verifies exactly what was signed. GetEUICCInfo
+   (section 5.7.8) has a fixed empty request but its answer goes into
+   what the SM-DP+ signs, so it too is handed back encoded rather than
+   decoded -- a decode-and-re-encode round trip is precisely the thing
+   that changes a byte and breaks a signature for no visible reason.
+
+   *out is malloc'ed and belongs to the caller on success. Returns 0, -1
+   when the card answered and refused, -2 when the exchange could not
+   happen. no_isdr follows rsp_card_read_info's convention. */
+int rsp_card_authenticate_server(rsp_transport_t *t,
+                                 const uint8_t *req, size_t req_len,
+                                 uint8_t **out, size_t *out_len,
+                                 int *no_isdr);
+int rsp_card_prepare_download(rsp_transport_t *t,
+                              const uint8_t *req, size_t req_len,
+                              uint8_t **out, size_t *out_len,
+                              int *no_isdr);
+int rsp_card_get_info1(rsp_transport_t *t, uint8_t **out, size_t *out_len,
+                       int *no_isdr);
+
+/* End an RSP session on the card (ES10b CancelSession, SGP.22 v2.6
+   section 5.7.14). This is the way out of a failed install: section
+   5.5.1 has the eUICC reject InitialiseSecureChannel while a session is
+   already ongoing, so without this one botched attempt blocks every
+   later one. reason is a CancelSessionReason -- loadBppExecutionError(5)
+   for a load that broke off, endUserRejection(0), postponed(1),
+   timeout(2), pprNotAllowed(3), metadataMismatch(4), undefinedReason(127).
+
+   The eUICC checks that transaction_id is the session it is holding and
+   answers invalidTransactionId otherwise. So this cannot clear a session
+   stranded by a crash: a fresh run does not know the id, and the card
+   has to be re-seated instead.
+
+   Returns 0, -1 when the card answered and refused, -2 otherwise. */
+int rsp_card_cancel_session(rsp_transport_t *t,
+                            const uint8_t transaction_id[16], long reason,
+                            int *no_isdr);
+
 #endif /* LPA_H */
