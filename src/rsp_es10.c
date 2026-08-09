@@ -965,3 +965,226 @@ int rsp_card_cancel_session(rsp_transport_t *t,
     free(resp);
     return rc;
 }
+
+/*
+ * rsp_card_load_bpp -- ES10b LoadBoundProfilePackage, SGP.22 v2.6
+ * section 5.7.6, with the segmentation section 2.5.5 requires.
+ *
+ * This is not "send the BPP in 255-byte chunks". Section 2.5.5 lists the
+ * segments by name, and they follow the package's own TLV structure:
+ *
+ *     the BoundProfilePackage tag and length, plus the whole
+ *       initialiseSecureChannelRequest TLV
+ *     the firstSequenceOf87 tag and length, plus the first '87' TLV
+ *     the sequenceOf88 tag and length
+ *     each '88' TLV, one segment each
+ *     the secondSequenceOf87 tag and length, plus the first '87' TLV
+ *     the sequenceOf86 tag and length
+ *     each '86' TLV, one segment each
+ *
+ * A segment of 255 bytes or less goes in one APDU; a larger one is split
+ * into 255-byte blocks with a possibly-shorter last one. And the rule
+ * that is easiest to miss and impossible to diagnose from the card's
+ * answer: "At the beginning of each segment the block number of the
+ * STORE DATA commands SHALL be reset." So P2 counts within a segment,
+ * not across the package -- which is why rsp_es10_send, whose counter
+ * runs the length of one request, cannot be reused here.
+ *
+ * P1 marks the last block of each segment, not only the last block of
+ * the package: section 5.7.6 has an intermediate block answer without a
+ * data field, and the last block of a BPP TLV answer with a Profile
+ * Installation Result "present or absent as specified in section 2.5.6".
+ * In practice the result arrives after the final '86'; this function
+ * accumulates whatever data any block returns and hands back the last
+ * non-empty answer, which is that result.
+ *
+ * Returns 0 with *out carrying the ProfileInstallationResult (malloc'ed,
+ * the caller's) -- note that 0 means the card took the package and had
+ * something to say about it, not that the install succeeded: the result
+ * itself carries that, and the caller must decode it. -1 when the card
+ * refused a block outright with a status word. -2 when the exchange
+ * could not happen, or the BPP's own structure could not be walked.
+ */
+
+/* One BER header: the tag (one or two bytes here -- BF36 and BF23 are the
+   only two-byte tags a BPP carries) and its length octets. Returns the
+   header's own size and sets *val_len, or 0 if it does not parse within
+   n. Only the definite forms a BPP uses are accepted; an indefinite
+   length (0x80) is refused rather than guessed at. */
+static size_t bpp_header(const uint8_t *p, size_t n, size_t *val_len)
+{
+    size_t i = 0;
+    if (n < 2) return 0;
+
+    /* A tag whose low five bits are all set continues into a second
+       byte. BF36 and BF23 are exactly that shape; everything else in a
+       BPP ('87', '88', '86', 'A0'..'A3') is one byte. */
+    if ((p[0] & 0x1F) == 0x1F) {
+        i = 2;
+        if (n < 3) return 0;
+    } else {
+        i = 1;
+    }
+
+    uint8_t l = p[i];
+    if (l < 0x80) {
+        *val_len = l;
+        return i + 1;
+    }
+    if (l == 0x80) return 0;  /* indefinite: not a DER BPP */
+    size_t nl = l & 0x7Fu;
+    if (nl > 4 || i + 1 + nl > n) return 0;
+    size_t v = 0;
+    for (size_t k = 0; k < nl; k++) v = (v << 8) | p[i + 1 + k];
+    *val_len = v;
+    return i + 1 + nl;
+}
+
+/* Send one segment: blocks of at most 255 bytes, P2 counting from zero
+   for THIS segment (section 2.5.5's reset rule), P1 marking the segment's
+   own last block. Any data the card returns is appended to acc, so the
+   Profile Installation Result the final segment produces is what a caller
+   ends up with. Returns 0, -1 or -2 on this file's usual convention. */
+static int bpp_send_segment(rsp_transport_t *t, const uint8_t *seg,
+                             size_t seg_len, rsp_growbuf_t *acc)
+{
+    uint8_t cmd[6 + ES10_MAX_BLOCK];
+    uint8_t resp[258];
+    size_t sent = 0;
+    unsigned block_no = 0;
+
+    if (seg_len == 0) return -2;
+
+    for (;;) {
+        size_t remain = seg_len - sent;
+        size_t chunk = remain > ES10_MAX_BLOCK ? ES10_MAX_BLOCK : remain;
+        int last = (sent + chunk >= seg_len);
+
+        if (block_no > 0xFFu) return -2;
+
+        cmd[0] = (uint8_t)ES10_CLA;
+        cmd[1] = (uint8_t)ES10_INS;
+        cmd[2] = (uint8_t)(last ? ES10_P1_LAST : ES10_P1_MORE);
+        cmd[3] = (uint8_t)block_no;
+        cmd[4] = (uint8_t)chunk;
+        memcpy(cmd + 5, seg + sent, chunk);
+        cmd[5 + chunk] = 0x00;
+
+        long n = t->transceive(t, cmd, 5 + chunk + 1, resp, sizeof resp);
+        sent += chunk;
+        block_no++;
+
+        if (n < 0) return (int)n;
+        if (n < 2) return -1;
+
+        unsigned sw = ((unsigned)resp[n - 2] << 8) | resp[n - 1];
+        if (sw != 0x9000u && (sw & 0xFF00u) != 0x6100u) return -1;
+
+        /* 61xx: the card has more to say. Collect it the same way every
+           other ES10 answer in this file is collected. */
+        if ((sw & 0xFF00u) == 0x6100u) {
+            uint8_t *chained = NULL;
+            size_t chained_len = 0;
+            unsigned csw = 0;
+            int rc = iso_collect_response(t, n, resp, sizeof resp,
+                                          &chained, &chained_len, &csw);
+            if (rc != 0) return rc;
+            if (chained_len &&
+                rsp_growbuf_append(acc, chained, chained_len) != 0) {
+                free(chained);
+                return -2;
+            }
+            free(chained);
+        } else if ((size_t)n > 2) {
+            if (rsp_growbuf_append(acc, resp, (size_t)n - 2) != 0) return -2;
+        }
+
+        if (last) return 0;
+    }
+}
+
+int rsp_card_load_bpp(rsp_transport_t *t, const uint8_t *bpp, size_t bpp_len,
+                      uint8_t **out, size_t *out_len, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (!t || !t->transceive || !bpp || !out || !out_len) return -2;
+    *out = NULL;
+    *out_len = 0;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    /* Walk the package once, sending as we go. Every offset below is
+       checked against bpp_len before it is used: a BPP whose own lengths
+       do not agree with its size is refused (-2), not read past. */
+    size_t outer_val = 0;
+    size_t outer_hdr = bpp_header(bpp, bpp_len, &outer_val);
+    if (outer_hdr == 0 || outer_hdr + outer_val > bpp_len) return -2;
+
+    size_t pos = outer_hdr;
+    const size_t end = outer_hdr + outer_val;
+
+    rsp_growbuf_t acc = {0};
+
+    /* Segment 1: the outer header plus the whole ISC request. */
+    {
+        size_t isc_val = 0;
+        size_t isc_hdr = bpp_header(bpp + pos, end - pos, &isc_val);
+        if (isc_hdr == 0 || pos + isc_hdr + isc_val > end) return -2;
+        size_t seg_len = outer_hdr + isc_hdr + isc_val;
+        rc = bpp_send_segment(t, bpp, seg_len, &acc);
+        if (rc != 0) goto fail;
+        pos += isc_hdr + isc_val;
+    }
+
+    /* The four SEQUENCE OF wrappers, in the order section 2.5.4 fixes
+       them: A0, A1, A2 (optional), A3. For A0 and A2 the wrapper header
+       travels with the first element; for A1 and A3 it travels alone. */
+    while (pos < end) {
+        size_t w_val = 0;
+        size_t w_hdr = bpp_header(bpp + pos, end - pos, &w_val);
+        if (w_hdr == 0 || pos + w_hdr + w_val > end) { rc = -2; goto fail; }
+
+        uint8_t wrapper = bpp[pos];
+        int header_rides_with_first = (wrapper == 0xA0 || wrapper == 0xA2);
+
+        size_t inner = pos + w_hdr;
+        const size_t inner_end = inner + w_val;
+        int first = 1;
+
+        if (!header_rides_with_first) {
+            rc = bpp_send_segment(t, bpp + pos, w_hdr, &acc);
+            if (rc != 0) goto fail;
+        }
+
+        while (inner < inner_end) {
+            size_t e_val = 0;
+            size_t e_hdr = bpp_header(bpp + inner, inner_end - inner, &e_val);
+            if (e_hdr == 0 || inner + e_hdr + e_val > inner_end) {
+                rc = -2; goto fail;
+            }
+            if (first && header_rides_with_first) {
+                rc = bpp_send_segment(t, bpp + pos, w_hdr + e_hdr + e_val,
+                                      &acc);
+            } else {
+                rc = bpp_send_segment(t, bpp + inner, e_hdr + e_val, &acc);
+            }
+            if (rc != 0) goto fail;
+            inner += e_hdr + e_val;
+            first = 0;
+        }
+
+        pos = inner_end;
+    }
+
+    *out = acc.buf;
+    *out_len = acc.len;
+    return 0;
+
+fail:
+    rsp_growbuf_free(&acc);
+    return rc;
+}

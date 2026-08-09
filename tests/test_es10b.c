@@ -8,6 +8,7 @@
    profiles on it, so a real delete could only ever answer
    iccidOrAidNotFound. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "lpa.h"
 
@@ -109,10 +110,67 @@ static void test_wrong_iccid_is_refused(void) {
        rc == -2);
 }
 
+static void test_load_bpp(void) {
+    rsp_transport_t t;
+    ok("the load-BPP recording opens",
+       rsp_replay_open("testdata/cards/synthetic-load-bpp.log", &t) == 0);
+
+    /* The same 30 bytes the recording documents. Built here rather than
+       read from a file so the structure the segmenter walks is visible
+       beside the APDUs it is expected to produce. */
+    static const uint8_t bpp[] = {
+        0xBF, 0x36, 0x1B,
+          0xBF, 0x23, 0x03, 0x01, 0x02, 0x03,
+          0xA0, 0x04, 0x87, 0x02, 0xAA, 0xBB,
+          0xA1, 0x04, 0x88, 0x02, 0xCC, 0xDD,
+          0xA3, 0x07, 0x86, 0x02, 0x11, 0x22, 0x86, 0x01, 0x33
+    };
+
+    uint8_t *res = NULL;
+    size_t res_len = 0;
+    int no_isdr = 1;
+    int rc = rsp_card_load_bpp(&t, bpp, sizeof bpp, &res, &res_len,
+                               &no_isdr);
+    t.close(&t);
+
+    /* Replay refuses any exchange whose command does not match, so this
+       passing means every one of the seven segments went out with the
+       right bytes, the right length and -- the thing that matters --
+       P2 back at zero. A running counter fails at the second segment. */
+    ok("the BPP is sent in section 2.5.5's seven segments", rc == 0);
+    ok("...and no_isdr is 0", no_isdr == 0);
+
+    static const uint8_t want[] = { 0xBF, 0x37, 0x03, 0x80, 0x01, 0x00 };
+    ok("...and the Profile Installation Result comes back",
+       res_len == sizeof want && res
+       && memcmp(res, want, sizeof want) == 0);
+    free(res);
+}
+
+/* A package whose own lengths do not agree with its size is refused,
+   not read past. The outer header here claims 27 bytes of content but
+   only 5 follow. */
+static void test_truncated_bpp_is_refused(void) {
+    rsp_transport_t t;
+    ok("the load-BPP recording opens again",
+       rsp_replay_open("testdata/cards/synthetic-load-bpp.log", &t) == 0);
+
+    static const uint8_t bad[] = { 0xBF, 0x36, 0x1B, 0xBF, 0x23, 0x03, 0x01, 0x02 };
+    uint8_t *res = (void *)0x1;
+    size_t res_len = 99;
+    int rc = rsp_card_load_bpp(&t, bad, sizeof bad, &res, &res_len, NULL);
+    t.close(&t);
+
+    ok("a BPP shorter than its own length field is -2", rc == -2);
+    ok("...with nothing handed back", res == NULL && res_len == 0);
+}
+
 int main(void) {
     test_challenge();
     test_delete_ok();
     test_delete_refused();
     test_wrong_iccid_is_refused();
+    test_load_bpp();
+    test_truncated_bpp_is_refused();
     return fails;
 }

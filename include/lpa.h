@@ -291,4 +291,34 @@ int rsp_card_cancel_session(rsp_transport_t *t,
                             const uint8_t transaction_id[16], long reason,
                             int *no_isdr);
 
+/* Transfer a Bound Profile Package to the eUICC (ES10b
+   LoadBoundProfilePackage, SGP.22 v2.6 section 5.7.6) with the
+   segmentation section 2.5.5 requires.
+
+   This is not "send the BPP in 255-byte chunks". Section 2.5.5 splits it
+   along its own TLV structure -- the outer header with the
+   InitialiseSecureChannel request, each sequence wrapper, each '88' and
+   each '86' -- and, the rule easiest to miss, "at the beginning of each
+   segment the block number of the STORE DATA commands SHALL be reset".
+   A package sent with one running block counter is refused by the card
+   without saying why.
+
+   *out is malloc'ed and belongs to the caller: it is the Profile
+   Installation Result the eUICC returned (section 2.5.6).
+
+   Returns 0 when the card took the package and answered. **0 does not
+   mean the install succeeded** -- the result itself says that, and the
+   caller has to decode it. -1 when the card refused a block outright
+   with a status word. -2 when the exchange could not happen, or the
+   package's own lengths do not agree with its size. no_isdr follows
+   rsp_card_read_info's convention.
+
+   A load that breaks off leaves an RSP session open on the card, and
+   section 5.5.1 has the eUICC reject the next InitialiseSecureChannel
+   while one is ongoing. Call rsp_card_cancel_session with
+   loadBppExecutionError(5) after a failure, or the next attempt cannot
+   start. */
+int rsp_card_load_bpp(rsp_transport_t *t, const uint8_t *bpp, size_t bpp_len,
+                      uint8_t **out, size_t *out_len, int *no_isdr);
+
 #endif /* LPA_H */

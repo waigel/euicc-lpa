@@ -1,0 +1,46 @@
+# LoadBoundProfilePackage (ES10b, SGP.22 v2.6 section 5.7.6) with the
+# segmentation section 2.5.5 requires. Hand-built, and deliberately tiny:
+# what this pins is the SHAPE of the APDU sequence, not any cryptography.
+#
+# The package is 30 bytes:
+#
+#   BF361B                    BoundProfilePackage, 27 bytes of content
+#     BF2303 010203           initialiseSecureChannelRequest (a stand-in)
+#     A004  8702AABB          firstSequenceOf87 with one '87'
+#     A104  8802CCDD          sequenceOf88 with one '88'
+#     A307  86021122 860133   sequenceOf86 with two '86'
+#
+# Section 2.5.5 splits that into seven segments: the outer header with
+# the whole ISC request; the A0 header with its first '87'; the A1
+# header alone; each '88'; the A3 header alone; each '86'. Every one is
+# under 255 bytes here, so each is exactly one APDU.
+#
+# THE POINT OF THIS FIXTURE is the P2 byte, which is 00 on every line
+# below. "At the beginning of each segment the block number of the STORE
+# DATA commands SHALL be reset" -- so a sender running one counter across
+# the whole package would send 00, 01, 02, ... and replay would refuse
+# the second exchange by name. That is the mistake this recording exists
+# to catch, and a real card reports it only as a flat refusal with no
+# reason given.
+#
+# P1 is 91 (last block) on every line for the same reason: each segment
+# here fits in one APDU, so every block is its own segment's last. A
+# segment larger than 255 bytes would send 11 for its earlier blocks.
+> 00A4040010A0000005591010FFFFFFFF890000010000
+< 6121
+> 00C0000021
+< 6F1F8410A0000005591010FFFFFFFF8900000100A5049F6501FFE00582030202009000
+> 80E2910009BF361BBF230301020300
+< 9000
+> 80E2910006A0048702AABB00
+< 9000
+> 80E2910002A10400
+< 9000
+> 80E29100048802CCDD00
+< 9000
+> 80E2910002A30700
+< 9000
+> 80E29100048602112200
+< 9000
+> 80E291000386013300
+< BF37038001009000
