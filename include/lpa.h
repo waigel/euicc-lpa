@@ -321,4 +321,47 @@ int rsp_card_cancel_session(rsp_transport_t *t,
 int rsp_card_load_bpp(rsp_transport_t *t, const uint8_t *bpp, size_t bpp_len,
                       uint8_t **out, size_t *out_len, int *no_isdr);
 
+/* Install a profile: the whole eight-step exchange, card and SM-DP+
+   alternating, in the order SGP.22 sections 3.1.2 and 3.1.3 fix. See
+   src/lpa_install.c's own comment for the steps and why the order is
+   forced rather than chosen.
+
+   upp is an Unprotected Profile Package -- a profile in DER, what
+   `euicc build` writes. metadata is an encoded StoreMetadataRequest
+   (section 5.5.3): this library has no profile-order database to learn a
+   profile's ICCID, name and provider from, so the caller supplies them.
+
+   transaction_id and otsk_dp are inputs rather than values this function
+   generates. Production passes fresh ones; a test passes fixed ones,
+   which is what makes a recorded session replay byte for byte. There is
+   no default, so there is no test path that can be shipped by accident.
+
+   *result is malloc'ed and belongs to the caller: the eUICC's own
+   ProfileInstallationResult (section 2.5.6).
+
+   Returns 0 when the exchange completed and the card answered. **This
+   does not mean the profile installed** -- the result says that, and the
+   caller must decode it. -1 when the card or the server answered and
+   refused. -2 when the exchange could not happen.
+
+   *step, if not NULL, receives which of the eight steps was last
+   attempted (1..8, or 0 if an argument was rejected before any). On a
+   failure this is the difference between "the card would not talk to us"
+   and "we built a package it would not take", which the return value
+   alone cannot say.
+
+   On any failure from step 3 onward this cancels the card's RSP session
+   before returning, because section 5.5.1 has the eUICC reject the next
+   InitialiseSecureChannel while one is ongoing. What it cannot clear is
+   a session stranded by a crash: CancelSession needs the matching
+   transactionId, which a fresh run does not know, and then the card has
+   to be re-seated. */
+int rsp_lpa_install(rsp_transport_t *t,
+                    const uint8_t *upp, size_t upp_len,
+                    const uint8_t *metadata, size_t metadata_len,
+                    const uint8_t transaction_id[16],
+                    const uint8_t otsk_dp[32],
+                    uint8_t **result, size_t *result_len,
+                    int *step, int *no_isdr);
+
 #endif /* LPA_H */

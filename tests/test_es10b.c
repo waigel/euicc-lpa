@@ -165,6 +165,60 @@ static void test_truncated_bpp_is_refused(void) {
     ok("...with nothing handed back", res == NULL && res_len == 0);
 }
 
+/* rsp_lpa_install: what can be asserted without a card.
+
+   The eight-step exchange itself cannot be driven from a hand-built
+   recording -- steps 4 and 6 answer with structures the eUICC signs
+   with its own key, and inventing those would prove only that this
+   test can forge what the library then accepts. The full flow gets its
+   proof from a recording of a real installation, which is the next
+   piece of work and needs the card.
+
+   What is provable now is the part that has nothing to do with
+   cryptography: that arguments are rejected before any I/O happens, and
+   that *step reports where the exchange actually got to. On a failure
+   that number is the difference between "the card would not talk to us"
+   and "we built a package it would not take", which the return value
+   alone cannot say. */
+static void test_install_arguments(void) {
+    uint8_t *res = (void *)0x1;
+    size_t res_len = 99;
+    int step = 7;
+    static const uint8_t upp[1] = { 0x00 };
+    static const uint8_t md[1] = { 0x00 };
+    static const uint8_t tid[16] = { 0 };
+    static const uint8_t otsk[32] = { 0 };
+
+    ok("a null transport is refused",
+       rsp_lpa_install(NULL, upp, 1, md, 1, tid, otsk, &res, &res_len,
+                       &step, NULL) == -2);
+    ok("...before any step is attempted", step == 0);
+}
+
+static void test_install_reports_the_step(void) {
+    rsp_transport_t t;
+    /* This recording answers a challenge request, not the euiccInfo1
+       request step 1 sends, so replay refuses the very first exchange.
+       That makes it a fixture for exactly one thing: does *step say 1. */
+    ok("a recording that cannot answer step 1 opens",
+       rsp_replay_open("testdata/cards/synthetic-challenge.log", &t) == 0);
+
+    uint8_t *res = NULL;
+    size_t res_len = 0;
+    int step = 0;
+    static const uint8_t upp[1] = { 0x00 };
+    static const uint8_t md[1] = { 0x00 };
+    static const uint8_t tid[16] = { 0 };
+    static const uint8_t otsk[32] = { 0 };
+    int rc = rsp_lpa_install(&t, upp, 1, md, 1, tid, otsk, &res, &res_len,
+                             &step, NULL);
+    t.close(&t);
+
+    ok("an install that cannot start fails", rc != 0);
+    ok("...and names step 1, not a later one", step == 1);
+    ok("...with nothing handed back", res == NULL && res_len == 0);
+}
+
 int main(void) {
     test_challenge();
     test_delete_ok();
@@ -172,5 +226,7 @@ int main(void) {
     test_wrong_iccid_is_refused();
     test_load_bpp();
     test_truncated_bpp_is_refused();
+    test_install_arguments();
+    test_install_reports_the_step();
     return fails;
 }
