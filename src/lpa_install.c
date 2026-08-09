@@ -42,6 +42,9 @@
 
 #include "lpa.h"
 #include "rsp.h"
+#include "rsp_internal.h"
+#include "InitiateAuthenticationOkEs9.h"
+#include "AuthenticateServerRequest.h"
 #include "mbedtls/platform_util.h"
 
 /* Frees everything the flow allocates. Written once rather than at each
@@ -70,6 +73,87 @@ static void scratch_free(struct install_scratch *g)
     if (g->bpp) mbedtls_platform_zeroize(g->bpp, g->bpp_len);
     free(g->bpp);
     memset(g, 0, sizeof *g);
+}
+
+
+/* Steps 3 and 4 do not speak the same language, and this is where that
+   gets fixed. rsp_dp_initiate_authentication answers with an
+   InitiateAuthenticationOkEs9 -- the ES9+ *response*. The card expects an
+   AuthenticateServerRequest, tag 'BF38' -- the ES10b *request*. Four of
+   the five fields are the same and carry the tags AuthenticateServerRequest
+   defines for them already (Table 36, NOTE 1), so they move across
+   untouched: they are part of what the SM-DP+ signed, and re-deriving any
+   of them would break a signature the card is about to check.
+
+   What changes is the two ends. transactionId is dropped -- the card
+   already learned it from the session. ctxParams1 is added, and it is the
+   LPA's own contribution: nothing in the ES9+ answer can supply it.
+
+   Its content here is deliberately minimal. matchingId and imei are
+   OPTIONAL and left out; imei especially, since an invented one in a
+   public repository is a number somebody could later mistake for real.
+   deviceCapabilities is an empty SEQUENCE and tac is an obviously fake
+   constant, because this is a build tool and not a handset: the eUICC
+   does not judge these values, it signs them into euiccSigned1 for an
+   SM-DP+ to read, and here that SM-DP+ is us. If a card ever does refuse
+   over them, that refusal is the evidence that would justify making them
+   configurable -- guessing at it beforehand would be designing for a
+   requirement nobody has shown. */
+/* der_encode wants a callback; rsp_growbuf_t wants an append. */
+static int growbuf_sink(const void *buf, size_t n, void *key)
+{
+    return rsp_growbuf_append((rsp_growbuf_t *)key, buf, n);
+}
+
+static int repack_authenticate_server(const uint8_t *es9, size_t es9_len,
+                                       uint8_t **out, size_t *out_len)
+{
+    InitiateAuthenticationOkEs9_t *in = NULL;
+    AuthenticateServerRequest_t req;
+    static const uint8_t fake_tac[4] = { 0x35, 0x29, 0x00, 0x00 };
+    int ret = -2;
+
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_InitiateAuthenticationOkEs9,
+                                   (void **)&in, es9, es9_len);
+    if (dr.code != RC_OK || !in) {
+        if (in) ASN_STRUCT_FREE(asn_DEF_InitiateAuthenticationOkEs9, in);
+        return -2;
+    }
+
+    memset(&req, 0, sizeof req);
+    /* Shallow: these four borrow their storage from `in`, which outlives
+       the encode below. req is never ASN_STRUCT_FREE'd for that reason --
+       it does not own what it points at. */
+    req.serverSigned1       = in->serverSigned1;
+    req.serverSignature1    = in->serverSignature1;
+    req.euiccCiPKIdToBeUsed = in->euiccCiPKIdToBeUsed;
+    req.serverCertificate   = in->serverCertificate;
+
+    req.ctxParams1.present = CtxParams1_PR_ctxParamsForCommonAuthentication;
+    if (OCTET_STRING_fromBuf(
+            &req.ctxParams1.choice.ctxParamsForCommonAuthentication
+                 .deviceInfo.tac,
+            (const char *)fake_tac, sizeof fake_tac) != 0) {
+        goto out;
+    }
+
+    {
+        rsp_growbuf_t g = {0};
+        asn_enc_rval_t er = der_encode(&asn_DEF_AuthenticateServerRequest,
+                                        &req, growbuf_sink, &g);
+        if (er.encoded < 0) { rsp_growbuf_free(&g); goto out; }
+        *out = g.buf;
+        *out_len = g.len;
+        ret = 0;
+    }
+
+out:
+    ASN_STRUCT_FREE_CONTENTS_ONLY(
+        asn_DEF_OCTET_STRING,
+        &req.ctxParams1.choice.ctxParamsForCommonAuthentication
+             .deviceInfo.tac);
+    ASN_STRUCT_FREE(asn_DEF_InitiateAuthenticationOkEs9, in);
+    return ret;
 }
 
 int rsp_lpa_install(rsp_transport_t *t,
@@ -114,6 +198,16 @@ int rsp_lpa_install(rsp_transport_t *t,
     if (rc != 0) goto out;
 
     if (step) *step = 4;
+    {
+        uint8_t *req = NULL;
+        size_t req_len = 0;
+        rc = repack_authenticate_server(g.auth_req, auth_req_len,
+                                        &req, &req_len);
+        if (rc != 0) goto cancel;
+        free(g.auth_req);
+        g.auth_req = req;
+        auth_req_len = req_len;
+    }
     rc = rsp_card_authenticate_server(t, g.auth_req, auth_req_len,
                                       &g.auth_resp, &auth_resp_len, NULL);
     if (rc != 0) goto cancel;
