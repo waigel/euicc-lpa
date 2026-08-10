@@ -640,8 +640,17 @@ static int fill_profile_info(rsp_profile_info_t *dst, const ProfileInfo_t *src)
         dst->isdp_aid_len = (size_t)src->isdpAid->size;
         dst->have_isdp_aid = 1;
     }
+    /* A dereference until euicc-rsp's codec started being generated with
+       -fwide-types (see that project's Makefile for why it has to be): an
+       unconstrained INTEGER is an INTEGER_t now, not a long, so the value
+       comes out through asn_INTEGER2long. A refusal is a value that does
+       not fit a long, which is one more thing "dst has no way to
+       represent" -- the -1 this function's own comment already describes,
+       not a new outcome. */
     if (src->profileState) {
-        dst->profile_state = *src->profileState;
+        if (asn_INTEGER2long(src->profileState, &dst->profile_state) != 0) {
+            return -1;
+        }
         dst->have_profile_state = 1;
     }
     if (src->profileNickname) {
@@ -657,7 +666,9 @@ static int fill_profile_info(rsp_profile_info_t *dst, const ProfileInfo_t *src)
         if (!dst->profile_name) return -1;
     }
     if (src->profileClass) {
-        dst->profile_class = *src->profileClass;
+        if (asn_INTEGER2long(src->profileClass, &dst->profile_class) != 0) {
+            return -1;
+        }
         dst->have_profile_class = 1;
     }
     return 0;
@@ -695,9 +706,16 @@ int rsp_card_read_profiles(rsp_transport_t *t, rsp_profile_info_t **out,
     }
 
     if (pl->present == ProfileInfoListResponse_PR_profileInfoListError) {
-        if (err) *err = pl->choice.profileInfoListError;
+        /* An INTEGER_t since euicc-rsp's codec started being generated
+           with -fwide-types; a refusal to fit a long means the eUICC's
+           own error code is one this function cannot report, which is
+           "could not make sense of the answer" (-2), not the eUICC
+           answering "no" (-1) with a code the caller could act on. */
+        long code = 0;
+        int fit = asn_INTEGER2long(&pl->choice.profileInfoListError, &code);
+        if (fit == 0 && err) *err = code;
         ASN_STRUCT_FREE(asn_DEF_ProfileInfoListResponse, pl);
-        return -1;
+        return fit == 0 ? -1 : -2;
     }
 
     if (pl->present != ProfileInfoListResponse_PR_profileInfoListOk) {
@@ -842,9 +860,14 @@ int rsp_card_delete_profile(rsp_transport_t *t, const uint8_t iccid[10],
         return -2;
     }
 
-    long v = r->deleteResult;
+    /* An INTEGER_t since euicc-rsp's codec started being generated with
+       -fwide-types; a result that does not fit a long is an answer this
+       function cannot decode, which is its own -2. */
+    long v = 0;
+    int fit = asn_INTEGER2long(&r->deleteResult, &v);
     ASN_STRUCT_FREE(asn_DEF_DeleteProfileResponse, r);
 
+    if (fit != 0) return -2;
     if (v == 0) return 0;
     if (result) *result = v;
     return -1;
