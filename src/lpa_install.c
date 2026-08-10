@@ -45,6 +45,8 @@
 #include "rsp_internal.h"
 #include "InitiateAuthenticationOkEs9.h"
 #include "AuthenticateServerRequest.h"
+#include "AuthenticateClientResponseEs9.h"
+#include "PrepareDownloadRequest.h"
 #include "mbedtls/platform_util.h"
 
 /* Frees everything the flow allocates. Written once rather than at each
@@ -156,6 +158,74 @@ out:
     return ret;
 }
 
+/* Steps 5 and 6 do not speak the same language either, for the same
+   reason steps 3 and 4 do not. rsp_dp_authenticate_client answers with an
+   AuthenticateClientResponseEs9, tag 'BF3B' -- the ES9+ *response*. The
+   card expects a PrepareDownloadRequest, tag 'BF21' -- the ES10b
+   *request*. Sending the ES9+ answer through unchanged is what a real
+   eUICC answered '6A88' to, "referenced data not found": it was handed a
+   data object it has no ES10b function for.
+
+   Three of AuthenticateClientOk's five fields are exactly
+   PrepareDownloadRequest's, with the same types and the same tags, so
+   they move across untouched -- smdpSignature2 covers smdpSigned2, and
+   re-encoding either would break the signature the card is about to
+   check. The two that are dropped are the two the card already has:
+   transactionId (from the session) and profileMetaData (which the SM-DP+
+   sent for the LPA to show a user, not for the eUICC).
+
+   hashCc stays absent. It is OPTIONAL and carries the hash of a
+   Confirmation Code; this library never sends one, and SmdpSigned2's own
+   ccRequiredFlag from the SM-DP+ side is false to match. */
+static int repack_prepare_download(const uint8_t *es9, size_t es9_len,
+                                    uint8_t **out, size_t *out_len)
+{
+    AuthenticateClientResponseEs9_t *in = NULL;
+    PrepareDownloadRequest_t req;
+    int ret = -2;
+
+    asn_dec_rval_t dr = ber_decode(NULL,
+                                    &asn_DEF_AuthenticateClientResponseEs9,
+                                    (void **)&in, es9, es9_len);
+    if (dr.code != RC_OK || !in) {
+        if (in) ASN_STRUCT_FREE(asn_DEF_AuthenticateClientResponseEs9, in);
+        return -2;
+    }
+    /* The authenticateClientError arm cannot reach here: step 5 returned
+       0, and rsp_dp_authenticate_client only emits the Ok arm when it
+       does. Refused as -2 rather than trusted, because "cannot make sense
+       of it" is exactly what an impossible shape is. */
+    if (in->present != AuthenticateClientResponseEs9_PR_authenticateClientOk) {
+        ASN_STRUCT_FREE(asn_DEF_AuthenticateClientResponseEs9, in);
+        return -2;
+    }
+
+    memset(&req, 0, sizeof req);
+    /* Shallow, exactly as repack_authenticate_server above: these three
+       borrow their storage from `in`, which outlives the encode below, so
+       req is never ASN_STRUCT_FREE'd -- it does not own what it points
+       at. */
+    req.smdpSigned2     = in->choice.authenticateClientOk.smdpSigned2;
+    req.smdpSignature2  = in->choice.authenticateClientOk.smdpSignature2;
+    req.smdpCertificate = in->choice.authenticateClientOk.smdpCertificate;
+
+    {
+        rsp_growbuf_t g = {0};
+        asn_enc_rval_t er = der_encode(&asn_DEF_PrepareDownloadRequest,
+                                        &req, growbuf_sink, &g);
+        if (er.encoded < 0) {
+            rsp_growbuf_free(&g);
+        } else {
+            *out = g.buf;
+            *out_len = g.len;
+            ret = 0;
+        }
+    }
+
+    ASN_STRUCT_FREE(asn_DEF_AuthenticateClientResponseEs9, in);
+    return ret;
+}
+
 int rsp_lpa_install(rsp_transport_t *t,
                     const uint8_t *upp, size_t upp_len,
                     const uint8_t *metadata, size_t metadata_len,
@@ -219,6 +289,16 @@ int rsp_lpa_install(rsp_transport_t *t,
     if (rc != 0) goto cancel;
 
     if (step) *step = 6;
+    {
+        uint8_t *req = NULL;
+        size_t req_len = 0;
+        rc = repack_prepare_download(g.prep_req, prep_req_len,
+                                     &req, &req_len);
+        if (rc != 0) goto cancel;
+        free(g.prep_req);
+        g.prep_req = req;
+        prep_req_len = req_len;
+    }
     rc = rsp_card_prepare_download(t, g.prep_req, prep_req_len,
                                    &g.prep_resp, &prep_resp_len, NULL);
     if (rc != 0) goto cancel;
