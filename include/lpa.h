@@ -280,6 +280,65 @@ int rsp_card_get_challenge(rsp_transport_t *t, uint8_t out[16], int *no_isdr);
 int rsp_card_delete_profile(rsp_transport_t *t, const uint8_t iccid[10],
                             long *result, int *no_isdr);
 
+/* Enable a profile by ICCID (ES10c EnableProfile, SGP.22 v2.6 section
+   5.7.16). "The function makes the target Profile enabled, and disables
+   implicitly the currently Enabled Profile, if any" -- atomically: on any
+   error the eUICC leaves both profiles as they were.
+
+   refreshFlag is sent as false, and that is not a shortcut. With it set,
+   the eUICC answers by sending REFRESH as its next proactive command --
+   a card reset that a Device's modem is expected to carry out. This
+   library speaks to a card in a reader over PC/SC: it handles no
+   proactive session and there is nothing here for a REFRESH to act on,
+   so asking for one would break the exchange it was sent over. With the
+   flag clear, 5.7.16 has the eUICC do the switch itself -- reset the PIN
+   status, disable the old profile, enable the target, implicitly select
+   the MF on the basic logical channel -- and answer OK. That is the shape
+   that works without a modem.
+
+   The conditions 5.7.16's own NOTE makes "the Device has the
+   responsibility to ensure" before calling with refreshFlag clear
+   (section 3.2.1) are about a handset detaching from the network first.
+   There is no network attachment here to be responsible for.
+
+   What the card will refuse: a profile not in the Disabled state, and --
+   because a Test Profile is enabled here -- a target that is neither
+   another Test Profile nor the Operational Profile that was enabled
+   before the first Test Profile was. Both come back as a real answer
+   rather than a failure to ask.
+
+   Returns 0 when the card answered ok(0). -1 when it answered and
+   refused, with *result set to which refusal: iccidOrAidNotFound(1),
+   profileNotInDisabledState(2), disallowedByPolicy(3),
+   wrongProfileReenabling(4), catBusy(5) or undefinedError(127)
+   (dist/EnableProfileResponse.h). *result is left at 0 on every other
+   outcome, success included; read it only after -1. -2 when the exchange
+   could not happen or the answer could not be decoded. no_isdr follows
+   rsp_card_read_info's convention. */
+int rsp_card_enable_profile(rsp_transport_t *t, const uint8_t iccid[10],
+                            long *result, int *no_isdr);
+
+/* Disable a profile by ICCID (ES10c DisableProfile, SGP.22 v2.6 section
+   5.7.17). The mirror of rsp_card_enable_profile and, practically, what
+   makes enabling reversible: an enabled profile cannot be deleted (5.7.18
+   has the eUICC refuse with profileNotInDisabledState), so without this a
+   card that has been enabled once cannot be returned to an empty state by
+   this library at all.
+
+   refreshFlag is sent as false, for the reason rsp_card_enable_profile
+   gives.
+
+   Returns 0 when the card answered ok(0). -1 when it answered and
+   refused, with *result set to which refusal: iccidOrAidNotFound(1),
+   profileNotInEnabledState(2), disallowedByPolicy(3), catBusy(5) or
+   undefinedError(127) (dist/DisableProfileResponse.h). Note that (2) is
+   the mirror of enable's own (2), not the same condition. *result is left
+   at 0 on every other outcome, success included; read it only after -1.
+   -2 when the exchange could not happen or the answer could not be
+   decoded. no_isdr follows rsp_card_read_info's convention. */
+int rsp_card_disable_profile(rsp_transport_t *t, const uint8_t iccid[10],
+                             long *result, int *no_isdr);
+
 /* The three exchanges whose request this library does not build.
    AuthenticateServer (SGP.22 v2.6 section 5.7.13) and PrepareDownload
    (section 5.7.5) carry a structure the SM-DP+ produced and signed; the

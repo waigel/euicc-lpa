@@ -219,10 +219,97 @@ static void test_install_reports_the_step(void) {
     ok("...with nothing handed back", res == NULL && res_len == 0);
 }
 
+/* EnableProfile against the real card's own answer. omnikey-enable.log is
+   the session that made this project's TS.48 test profile the enabled one,
+   captured verbatim -- so the request in it is one a real eUICC accepted,
+   not one this test agreed with itself about.
+
+   rsp_replay is command-matched: it refuses an exchange whose command
+   differs from the recording. That is what makes "the recording opens and
+   the call succeeds" a statement about the request bytes, and what would
+   catch the two places this encoding could plausibly go wrong --
+   profileIdentifier's [0] being EXPLICIT, so 'A0 0C' wraps Iccid's own
+   '5A' instead of replacing it, and refreshFlag being present at all. */
+static void test_enable_ok(void) {
+    rsp_transport_t t;
+    ok("the enable recording opens",
+       rsp_replay_open("testdata/cards/omnikey-enable.log", &t) == 0);
+
+    /* The ICCID as EFiccid holds it -- nibble-swapped, which is what RSP
+       means by Iccid and what `euicc card profiles` prints. */
+    static const uint8_t iccid[10] = {
+        0x98, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0x10, 0x32, 0x14
+    };
+    long result = 99;
+    int no_isdr = 1;
+    int rc = rsp_card_enable_profile(&t, iccid, &result, &no_isdr);
+    t.close(&t);
+
+    ok("the real card's enable reads as success", rc == 0);
+    ok("...with *result left at 0, not the card's enum value", result == 0);
+    ok("...and no_isdr is 0", no_isdr == 0);
+}
+
+/* Nothing was asked, so there is no answer to report: -2, not -1, and no
+   crash. */
+static void test_enable_arguments(void) {
+    rsp_transport_t t;
+    ok("the enable recording opens again, for the argument checks",
+       rsp_replay_open("testdata/cards/omnikey-enable.log", &t) == 0);
+    static const uint8_t iccid[10] = { 0 };
+    ok("a null ICCID is -2",
+       rsp_card_enable_profile(&t, NULL, NULL, NULL) == -2);
+    t.close(&t);
+    ok("a null transport is -2",
+       rsp_card_enable_profile(NULL, iccid, NULL, NULL) == -2);
+}
+
+/* DisableProfile, from the session that put the same profile back into the
+   disabled state so it could be deleted again. Same shape as enable with
+   'BF32' for 'BF31', which is exactly why it is worth its own recording:
+   the two requests differ in one byte, and a helper that built both would
+   pass an enable test while sending enables for disables. */
+static void test_disable_ok(void) {
+    rsp_transport_t t;
+    ok("the disable recording opens",
+       rsp_replay_open("testdata/cards/omnikey-disable.log", &t) == 0);
+
+    static const uint8_t iccid[10] = {
+        0x98, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0x10, 0x32, 0x14
+    };
+    long result = 99;
+    int no_isdr = 1;
+    int rc = rsp_card_disable_profile(&t, iccid, &result, &no_isdr);
+    t.close(&t);
+
+    ok("the real card's disable reads as success", rc == 0);
+    ok("...with *result left at 0", result == 0);
+    ok("...and no_isdr is 0", no_isdr == 0);
+}
+
+/* And the other way round: the enable recording must not answer a disable.
+   rsp_replay is command-matched, so this is what proves the two functions
+   send different bytes rather than one function serving both tags. */
+static void test_disable_is_not_enable(void) {
+    rsp_transport_t t;
+    ok("the enable recording opens, to be asked for a disable",
+       rsp_replay_open("testdata/cards/omnikey-enable.log", &t) == 0);
+    static const uint8_t iccid[10] = {
+        0x98, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0x10, 0x32, 0x14
+    };
+    int rc = rsp_card_disable_profile(&t, iccid, NULL, NULL);
+    t.close(&t);
+    ok("a disable against an enable recording is -2, not success", rc == -2);
+}
+
 int main(void) {
     test_challenge();
     test_delete_ok();
     test_delete_refused();
+    test_enable_ok();
+    test_enable_arguments();
+    test_disable_ok();
+    test_disable_is_not_enable();
     test_wrong_iccid_is_refused();
     test_load_bpp();
     test_truncated_bpp_is_refused();

@@ -540,3 +540,55 @@ line) is unchanged:
 
 It prints 90 bytes; the recording wraps them in the usual `61 5A` /
 `GET RESPONSE` pair and appends `9000`.
+
+## `omnikey-enable.log`
+
+`rsp_card_enable_profile`'s own recording, and the first one in this
+directory that captures a card being *changed* rather than asked. It is
+the session that made this project's TS.48 Generic Test Profile the
+enabled one, taken with:
+
+```
+euicc card enable 98001032547698103214 --record omnikey-enable.log
+```
+
+Eight lines: the ISD-R SELECT with its `61 21` chaining, then the one
+STORE DATA that carries the request, then `61 06` / `GET RESPONSE` for
+the answer.
+
+The request is worth reading, because it is the shape the generated
+member table alone would not settle:
+
+```
+80 E2 91 00 14  BF 31 11  A0 0C  5A 0A <iccid>  81 01 00  00
+```
+
+`A0 0C` is `profileIdentifier` as `[0]` **EXPLICIT** (tag_mode `+1` in
+`dist/EnableProfileRequest.c`), so it wraps `Iccid`'s own `APPLICATION 26`
+`'5A'` rather than replacing it -- unlike `DeleteProfileRequest`, which is
+a CHOICE at the top level and therefore has no such wrapper. `81 01 00`
+is `refreshFlag` `[1]` IMPLICIT over BOOLEAN, false: with it set the eUICC
+answers by sending REFRESH as a proactive command, a card reset that a
+Device's modem is expected to carry out, and this library has neither
+(see `lpa.h`). The answer is `BF31 03 80 01 00` -- `enableResult` `ok(0)`.
+
+Safe to commit on the same terms as `omnikey-info.log`: it carries one
+real eUICC's public identifiers and the ICCID of a test profile, and no
+key material. An enable request has none to carry.
+
+## `omnikey-disable.log`
+
+The other half of the same afternoon: the session that put that profile
+back into the disabled state, so it could be deleted and the card left as
+it was found. Taken the same way:
+
+```
+euicc card disable 98001032547698103214 --record omnikey-disable.log
+```
+
+Identical to `omnikey-enable.log` but for one byte -- `BF 32` where that
+one has `BF 31`, and `BF32 03 80 01 00` coming back. That one byte is why
+this is a recording of its own rather than a note under the other: replay
+is command-matched, so `tests/test_es10b.c` can ask the enable recording
+for a disable and require a refusal. A single helper serving both tags
+with the wrong constant passes an enable test and fails that one.

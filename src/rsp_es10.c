@@ -115,6 +115,8 @@
 #include "ProfileInfo.h"
 #include "GetEuiccChallengeResponse.h"
 #include "DeleteProfileResponse.h"
+#include "EnableProfileResponse.h"
+#include "DisableProfileResponse.h"
 
 #define ES10_MAX_BLOCK 255u  /* SGP.22 v2.6 section 2.5.5 / 5.7.6 */
 
@@ -902,6 +904,122 @@ int rsp_card_delete_profile(rsp_transport_t *t, const uint8_t iccid[10],
     long v = 0;
     int fit = asn_INTEGER2long(&r->deleteResult, &v);
     ASN_STRUCT_FREE(asn_DEF_DeleteProfileResponse, r);
+
+    if (fit != 0) return -2;
+    if (v == 0) return 0;
+    if (result) *result = v;
+    return -1;
+}
+
+/*
+ * rsp_card_enable_profile -- ES10c EnableProfile, SGP.22 v2.6 section
+ * 5.7.16. The same shape as DeleteProfile above, with one more field and
+ * one more layer, both read off the generated member table rather than
+ * assumed:
+ *
+ *   BF 31 11  A0 0C  5A 0A <iccid>  81 01 00
+ *
+ * dist/EnableProfileRequest.c's asn_MBR_EnableProfileRequest_1 gives
+ * profileIdentifier context [0] with tag_mode +1, "EXPLICIT tag at
+ * current level" -- so [0] wraps the CHOICE rather than replacing its
+ * alternative's tag, and Iccid's own APPLICATION 26 ('5A') stays inside
+ * it. That is why there is an 'A0 0C' here where DeleteProfileRequest,
+ * a CHOICE at the top level, has nothing. refreshFlag is context [1]
+ * with tag_mode -1 (IMPLICIT) over BOOLEAN, hence '81 01 00' -- false,
+ * for the reason lpa.h gives at length.
+ *
+ * The outer 'BF 31' replaces the SEQUENCE's universal tag rather than
+ * wrapping it, even though asn_DEF_EnableProfileRequest_tags_1 lists two
+ * tags. That is not read off the table, which is ambiguous on the point:
+ * GetEuiccDataResponse's table lists the same two, and this project's own
+ * test eUICC answers it 'BF3E 12 5A 10 <eid>' -- one tag on the wire, no
+ * inner '30'. The card settled it.
+ */
+/* EnableProfileRequest and DisableProfileRequest are the same request with
+   a different tag -- [49]/'BF31' against [50]/'BF32', and otherwise the
+   identical { profileIdentifier CHOICE, refreshFlag BOOLEAN }. Their
+   responses are not the same type, though, and their result enums differ
+   (wrongProfileReenabling(4) exists only for enable,
+   profileNotInEnabledState(2) means the mirror of enable's own (2)), so
+   the split is here: this sends the request and hands back the raw
+   answer, and each caller decodes its own response type. */
+static int es10_profile_switch(rsp_transport_t *t, uint8_t tag_low,
+                                const uint8_t iccid[10],
+                                uint8_t **resp, size_t *resp_len,
+                                int *no_isdr)
+{
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    uint8_t req[20];
+    req[0] = 0xBF; req[1] = tag_low; req[2] = 0x11;
+    req[3] = 0xA0; req[4] = 0x0C;
+    req[5] = 0x5A; req[6] = 0x0A;
+    memcpy(req + 7, iccid, 10);
+    req[17] = 0x81; req[18] = 0x01; req[19] = 0x00;
+
+    unsigned sw = 0;
+    return rsp_es10_send(t, req, sizeof req, resp, resp_len, &sw);
+}
+
+int rsp_card_enable_profile(rsp_transport_t *t, const uint8_t iccid[10],
+                            long *result, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (result) *result = 0;
+    if (!t || !t->transceive || !iccid) return -2;
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    int rc = es10_profile_switch(t, 0x31, iccid, &resp, &resp_len, no_isdr);
+    if (rc != 0) return rc;
+
+    EnableProfileResponse_t *r = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_EnableProfileResponse,
+                                   (void **)&r, resp, resp_len);
+    free(resp);
+    if (dr.code != RC_OK || !r) {
+        if (r) ASN_STRUCT_FREE(asn_DEF_EnableProfileResponse, r);
+        return -2;
+    }
+
+    long v = 0;
+    int fit = asn_INTEGER2long(&r->enableResult, &v);
+    ASN_STRUCT_FREE(asn_DEF_EnableProfileResponse, r);
+
+    if (fit != 0) return -2;
+    if (v == 0) return 0;
+    if (result) *result = v;
+    return -1;
+}
+
+int rsp_card_disable_profile(rsp_transport_t *t, const uint8_t iccid[10],
+                             long *result, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (result) *result = 0;
+    if (!t || !t->transceive || !iccid) return -2;
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    int rc = es10_profile_switch(t, 0x32, iccid, &resp, &resp_len, no_isdr);
+    if (rc != 0) return rc;
+
+    DisableProfileResponse_t *r = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_DisableProfileResponse,
+                                   (void **)&r, resp, resp_len);
+    free(resp);
+    if (dr.code != RC_OK || !r) {
+        if (r) ASN_STRUCT_FREE(asn_DEF_DisableProfileResponse, r);
+        return -2;
+    }
+
+    long v = 0;
+    int fit = asn_INTEGER2long(&r->disableResult, &v);
+    ASN_STRUCT_FREE(asn_DEF_DisableProfileResponse, r);
 
     if (fit != 0) return -2;
     if (v == 0) return 0;
