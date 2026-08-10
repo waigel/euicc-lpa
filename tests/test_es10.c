@@ -79,6 +79,37 @@ int main(void) {
     ok("...not even a zero-length id against an empty list",
        rsp_card_trusts(&empty, known, 0) == 0);
 
+    /* uiccCapability, as this card actually sent it: '06 7F 36 C0' -- six
+       unused bits, so eighteen declared, over the bytes 7F 36 C0.
+       Asserted as individual capabilities rather than as those three
+       bytes, because the bytes are only the transport: what a caller acts
+       on is "does this card do X", and the numbering between octet and
+       capability is exactly where that goes wrong. Bit 0 is clear in 0x7F
+       while bits 1..7 are set, which makes it the one bit that catches a
+       most-significant-first mix-up on its own. */
+    ok("the card declared a uiccCapability", info.have_uicc_capability);
+    ok("...of eighteen bits", info.uicc_capability_bits == 18);
+
+    ok("contactless: not claimed", rsp_card_supports(&info, 0) == 0);
+    ok("usim: claimed",            rsp_card_supports(&info, 1) == 1);
+    ok("javacard: claimed",        rsp_card_supports(&info, 14) == 1);
+    ok("multos: not claimed",      rsp_card_supports(&info, 15) == 0);
+    ok("multipleIsim: claimed, and the last bit the card declared",
+       rsp_card_supports(&info, 17) == 1);
+
+    /* The three things TS.48 v7.0's Generic Test Profile demands that
+       this card does not declare -- why it is refused unmodified. They
+       sit past the eighteen bits above, so this is also the case that
+       has to read as a plain "no" rather than "the card did not say". */
+    ok("getIdentity: past what the card declared, so not claimed",
+       rsp_card_supports(&info, 22) == 0);
+    ok("profile-a-x25519: not claimed", rsp_card_supports(&info, 23) == 0);
+    ok("profile-b-p256: not claimed",   rsp_card_supports(&info, 24) == 0);
+
+    ok("a card that sent no uiccCapability answers -1, not 0",
+       rsp_card_supports(&empty, 1) == -1);
+    ok("...and so does a null card", rsp_card_supports(NULL, 1) == -1);
+
     rsp_card_info_free(&info);
     t.close(&t);
 

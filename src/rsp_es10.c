@@ -468,6 +468,31 @@ int rsp_card_read_info(rsp_transport_t *t, rsp_card_info_t *out, int *no_isdr)
     snprintf(out->svn, sizeof out->svn, "%u.%u.%u",
              info2->svn.buf[0], info2->svn.buf[1], info2->svn.buf[2]);
 
+    /* uiccCapability. A BIT STRING carries its own count of unused
+       trailing bits, so the declared length is 8 * size - bits_unused;
+       that number matters, because a card claims nothing about the bits
+       it did not send. Anything longer than uicc_capability holds is an
+       answer this struct cannot represent, and gets the same -2 as the
+       non-uniform ci_ids list below rather than a silent truncation --
+       truncating would turn capabilities a future card does claim into
+       capabilities it appears to lack, which is the one direction this
+       field must never fail in. */
+    {
+        const BIT_STRING_t *cap = (const BIT_STRING_t *)&info2->uiccCapability;
+        if (cap->size > sizeof out->uicc_capability ||
+            (size_t)cap->bits_unused > 7 ||
+            (cap->size == 0 && cap->bits_unused != 0)) {
+            ASN_STRUCT_FREE(asn_DEF_EUICCInfo2, info2);
+            return -2;
+        }
+        if (cap->buf && cap->size > 0) {
+            memcpy(out->uicc_capability, cap->buf, cap->size);
+            out->uicc_capability_bits =
+                (size_t)cap->size * 8 - (size_t)cap->bits_unused;
+            out->have_uicc_capability = 1;
+        }
+    }
+
     size_t n = (size_t)info2->euiccCiPKIdListForVerification.list.count;
     if (n > 0) {
         /* rsp_card_info_t's own contract (include/lpa.h) is a single
@@ -581,6 +606,17 @@ int rsp_card_trusts(const rsp_card_info_t *i, const uint8_t *id, size_t id_len)
         if (memcmp(i->ci_ids + k * i->ci_id_len, id, id_len) == 0) return 1;
     }
     return 0;
+}
+
+int rsp_card_supports(const rsp_card_info_t *i, unsigned bit)
+{
+    if (!i || !i->have_uicc_capability) return -1;
+    /* Past what the card declared: a complete answer that does not claim
+       this capability, not an unanswered question -- see lpa.h. */
+    if ((size_t)bit >= i->uicc_capability_bits) return 0;
+    /* BIT STRING numbering: bit 0 is the most significant bit of the
+       first octet. */
+    return (i->uicc_capability[bit / 8] >> (7 - (bit % 8))) & 1;
 }
 
 /*

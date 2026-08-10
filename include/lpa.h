@@ -103,6 +103,19 @@ typedef struct {
     uint8_t *ci_ids;            /* for verification */
     size_t   ci_count;
     size_t   ci_id_len;
+
+    /* uiccCapability, EUICCInfo2's UICCCapability BIT STRING: what this
+       card claims it can do, one bit per capability, the module's bit 0
+       being the most significant bit of the first byte.
+       uicc_capability_bits is how many bits the card actually declared. A
+       card may send fewer than the module defines, and everything past
+       the end is simply not claimed -- which is how an eUICC built to an
+       older profile version says it has none of the capabilities the
+       module has grown since. Read these through rsp_card_supports
+       rather than directly. */
+    uint8_t uicc_capability[8];
+    size_t  uicc_capability_bits;
+    int     have_uicc_capability;
 } rsp_card_info_t;
 
 /* Select the ISD-R, then read EUICCInfo2 and the EID. Returns 0, -1 if the
@@ -140,6 +153,24 @@ void rsp_card_info_free(rsp_card_info_t *i);
    here is not on its own proof that a real card was consulted and
    disagreed, the way an -1 elsewhere in this file is. */
 int rsp_card_trusts(const rsp_card_info_t *i, const uint8_t *id, size_t id_len);
+
+/* Does this card claim capability `bit` of UICCCapability (rsp-2.5.asn's
+   own bit numbering: contactlessSupport(0), usimSupport(1), ...,
+   getIdentity(22), profile-a-x25519(23), profile-b-p256(24),
+   suciCalculatorApi(25))?
+
+   1 yes, 0 no, -1 the card said nothing this question could be put to --
+   a null `i`, or an EUICCInfo2 that carried no uiccCapability at all.
+   Unlike rsp_card_trusts above, "no" and "could not tell" are kept apart
+   here, because they lead somewhere different: a capability a card
+   declares it lacks is a reason to refuse a profile that requires it,
+   while a card that declared nothing is a card this check cannot speak
+   for, and refusing on that basis would turn silence into a verdict.
+
+   A bit past the end of what the card declared is a 0, not a -1: a
+   shorter BIT STRING is a complete answer that happens not to claim the
+   capability, not a missing one. */
+int rsp_card_supports(const rsp_card_info_t *i, unsigned bit);
 
 /* One profile as GetProfilesInfo lists it (ProfileInfo, SGP.22 v2.6
    section 5.7.15). Every member of the ASN.1 type is OPTIONAL, and a
