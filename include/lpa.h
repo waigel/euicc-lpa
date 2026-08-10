@@ -452,6 +452,16 @@ int rsp_lpa_install(rsp_transport_t *t,
                     const uint8_t transaction_id[16],
                     const uint8_t otsk_dp[32],
                     uint8_t **result, size_t *result_len,
-                    int *step, int *no_isdr);
+                    int *step, int *no_isdr, int *installed);
+/* `installed`, if not NULL, is what the eUICC's own signed report says --
+   1 for finalResult.successResult, 0 for errorResult -- and is only
+   written when this function returns 0, because step 9 is what makes that
+   report the card's word rather than whatever arrived. A 0 return with
+   *installed 0 is a complete, trustworthy answer: the eUICC said it could
+   not install the profile, and that it was the eUICC saying so has been
+   established. `installed` is left untouched on any failure, including a
+   step 9 failure -- there the profile may well be installed, and the only
+   honest thing to report is that the report cannot be attributed to the
+   card (see euicc-rsp's rsp_dp_verify_installation_result). */
 
 #endif /* LPA_H */

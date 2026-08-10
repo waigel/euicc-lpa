@@ -1,5 +1,5 @@
 /*
- * lpa_install.c -- the eight-step exchange that installs a profile.
+ * lpa_install.c -- the nine-step exchange that installs a profile.
  *
  * This is the LPA's actual job. Neither side of the conversation can
  * run it: the SM-DP+ never touches the card, and the card never reaches
@@ -17,6 +17,13 @@
  *   6  card    PrepareDownload     5.7.5   otPK.EUICC.ECKA
  *   7  server  GetBoundProfilePackage 5.6.2  the BPP
  *   8  card    LoadBoundProfilePackage 5.7.6  ProfileInstallationResult
+ *   9  local   verify euiccSignPIR    2.5.6   is that report the card's?
+ *
+ * Step 9 talks to nobody. It is here because step 8's answer is a claim
+ * about what the card did, signed by the card, and believing it unchecked
+ * would make every outcome above only as trustworthy as the last message
+ * -- which arrives over the same unauthenticated transport as everything
+ * else.
  *
  * Step 6 is the hinge. The session keys come from ECDH between the
  * server's one-time key and otPK.EUICC.ECKA, and the card does not
@@ -232,7 +239,7 @@ int rsp_lpa_install(rsp_transport_t *t,
                     const uint8_t transaction_id[16],
                     const uint8_t otsk_dp[32],
                     uint8_t **result, size_t *result_len,
-                    int *step, int *no_isdr)
+                    int *step, int *no_isdr, int *installed)
 {
     struct install_scratch g;
     size_t info1_len = 0, auth_req_len = 0, auth_resp_len = 0;
@@ -313,6 +320,31 @@ int rsp_lpa_install(rsp_transport_t *t,
     if (step) *step = 8;
     rc = rsp_card_load_bpp(t, g.bpp, bpp_len, result, result_len, NULL);
     if (rc != 0) goto cancel;
+
+    /* Step 9: the eUICC's own report, checked rather than believed.
+       Everything above this line establishes what the card was sent; this
+       establishes that what came back is the card's answer to it.
+       ProfileInstallationResult carries euiccSignPIR for exactly that
+       purpose (SGP.22 v2.6 section 2.5.6), and until this call existed
+       nothing looked at it -- a report of success was accepted because it
+       arrived.
+
+       Its own step number, not folded into 8, because the two failures
+       mean different things and lead somewhere different: a step 8 failure
+       is the card refusing a block, with nothing installed; a step 9
+       failure is a profile that may well be installed and a report about
+       it this library cannot attribute to the card. No cancel on this
+       path either -- the load already completed, and cancelling a finished
+       session with loadBppExecutionError would tell the card something
+       untrue about what happened. */
+    if (step) *step = 9;
+    {
+        int ok = 0;
+        rc = rsp_dp_verify_installation_result(s, *result, *result_len,
+                                               &ok, NULL, NULL);
+        if (rc != 0) goto out;
+        if (installed) *installed = ok;
+    }
 
     goto out;
 
