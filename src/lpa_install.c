@@ -114,7 +114,7 @@ static int growbuf_sink(const void *buf, size_t n, void *key)
     return rsp_growbuf_append((rsp_growbuf_t *)key, buf, n);
 }
 
-static int repack_authenticate_server(const uint8_t *es9, size_t es9_len,
+int rsp_lpa_repack_authenticate_server(const uint8_t *es9, size_t es9_len,
                                        uint8_t **out, size_t *out_len)
 {
     InitiateAuthenticationOkEs9_t *in = NULL;
@@ -184,7 +184,7 @@ out:
    hashCc stays absent. It is OPTIONAL and carries the hash of a
    Confirmation Code; this library never sends one, and SmdpSigned2's own
    ccRequiredFlag from the SM-DP+ side is false to match. */
-static int repack_prepare_download(const uint8_t *es9, size_t es9_len,
+int rsp_lpa_repack_prepare_download(const uint8_t *es9, size_t es9_len,
                                     uint8_t **out, size_t *out_len)
 {
     AuthenticateClientResponseEs9_t *in = NULL;
@@ -283,7 +283,7 @@ int rsp_lpa_install(rsp_transport_t *t,
     {
         uint8_t *req = NULL;
         size_t req_len = 0;
-        rc = repack_authenticate_server(g.auth_req, auth_req_len,
+        rc = rsp_lpa_repack_authenticate_server(g.auth_req, auth_req_len,
                                         &req, &req_len);
         if (rc != 0) goto cancel;
         free(g.auth_req);
@@ -304,7 +304,7 @@ int rsp_lpa_install(rsp_transport_t *t,
     {
         uint8_t *req = NULL;
         size_t req_len = 0;
-        rc = repack_prepare_download(g.prep_req, prep_req_len,
+        rc = rsp_lpa_repack_prepare_download(g.prep_req, prep_req_len,
                                      &req, &req_len);
         if (rc != 0) goto cancel;
         free(g.prep_req);
