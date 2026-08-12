@@ -237,7 +237,9 @@ int rsp_lpa_install(rsp_transport_t *t,
                     const uint8_t *upp, size_t upp_len,
                     const uint8_t *metadata, size_t metadata_len,
                     const uint8_t transaction_id[16],
+                    const uint8_t server_challenge[16],
                     const uint8_t otsk_dp[32],
+                    const char *server_address,
                     uint8_t **result, size_t *result_len,
                     int *step, int *no_isdr, int *installed)
 {
@@ -250,7 +252,8 @@ int rsp_lpa_install(rsp_transport_t *t,
     memset(&g, 0, sizeof g);
     if (step) *step = 0;
     if (no_isdr) *no_isdr = 0;
-    if (!t || !upp || !metadata || !transaction_id || !otsk_dp ||
+    if (!t || !upp || !metadata || !transaction_id || !server_challenge ||
+        !otsk_dp || !server_address ||
         !result || !result_len) {
         return -2;
     }
@@ -271,6 +274,8 @@ int rsp_lpa_install(rsp_transport_t *t,
     if (step) *step = 3;
     rc = rsp_dp_initiate_authentication(challenge, sizeof challenge,
                                         g.info1, info1_len, transaction_id,
+                                        server_challenge,
+                                        server_address, server_address,
                                         &s, &g.auth_req, &auth_req_len);
     if (rc != 0) goto out;
 

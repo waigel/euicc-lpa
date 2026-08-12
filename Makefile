@@ -36,6 +36,18 @@ RSPDIST := $(RSP)/dist
 # named in the recipe text rather than declared a prerequisite.
 MBED_LIBS := $(MBED)/library/libmbedx509.a $(MBED)/library/libmbedcrypto.a
 
+# The same two options euicc-rsp's own Makefile builds mbedTLS with. They
+# have to be repeated here, not merely inherited: they add mutex members
+# to mbedTLS contexts, and src/rsp_es10.c and src/lpa_install.c both
+# include mbedTLS headers by way of rsp_internal.h. A file compiled
+# without them would size those contexts differently than the archives it
+# links against -- silent memory corruption rather than a link error.
+MBED_CFG := -DMBEDTLS_THREADING_C -DMBEDTLS_THREADING_PTHREAD
+
+# MBEDTLS_THREADING_PTHREAD needs pthread at link time: a no-op on
+# Darwin, where it lives in libc, and not on Linux.
+MBED_LDLIBS := -pthread
+
 # -I$(RSP)/src is for rsp_internal.h, which holds only static inline
 # helpers (rsp_growbuf_t, rsp_der_length_octets) that both sides of the
 # repository split need. Copying it here would be a second implementation
@@ -54,7 +66,7 @@ PCSC_CFLAGS := $(shell pkg-config --cflags libpcsclite 2>/dev/null)
 PCSC_LIBS   := $(shell pkg-config --libs libpcsclite 2>/dev/null || echo -lpcsclite)
 endif
 
-ALL_CFLAGS = $(STD) $(WARN) $(CFLAGS) $(EXTRA) $(INC) $(DEF) $(PCSC_CFLAGS)
+ALL_CFLAGS = $(STD) $(WARN) $(CFLAGS) $(EXTRA) $(INC) $(DEF) $(PCSC_CFLAGS) $(MBED_CFG)
 
 SRCS := $(wildcard src/*.c)
 OBJS := $(SRCS:.c=.o)
@@ -129,7 +141,7 @@ CHECK_BINS := $(filter-out tests/run-card,$(TEST_BINS))
 # the same reason (VERSION compiled in via -D).
 tests/run-%: tests/test_%.c $(LIB) $(RSP)/librsp.a Makefile
 	$(CC) $(ALL_CFLAGS) -idirafter $(RSPDIST) $< $(LIB) \
-	    $(RSP)/librsp.a $(RSPDIST)/*.o $(MBED_LIBS) \
+	    $(RSP)/librsp.a $(RSPDIST)/*.o $(MBED_LIBS) $(MBED_LDLIBS) \
 	    -o $@ $(PCSC_LIBS) -lm
 	@# On Darwin, a -g link auto-generates a companion run-%.dSYM directory.
 	@# tests/run-tests globs "run-*", so that bundle would be picked up and
