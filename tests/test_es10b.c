@@ -187,10 +187,13 @@ static void test_install_arguments(void) {
     static const uint8_t upp[1] = { 0x00 };
     static const uint8_t md[1] = { 0x00 };
     static const uint8_t tid[16] = { 0 };
+    static const uint8_t sc[16] = { 0 };
     static const uint8_t otsk[32] = { 0 };
+    static const char addr[] = "smdp.example.com";
 
     ok("a null transport is refused",
-       rsp_lpa_install(NULL, upp, 1, md, 1, tid, otsk, &res, &res_len,
+       rsp_lpa_install(NULL, upp, 1, md, 1, tid, sc, otsk, addr,
+                       &res, &res_len,
                        &step, NULL, NULL) == -2);
     ok("...before any step is attempted", step == 0);
 }
@@ -209,8 +212,11 @@ static void test_install_reports_the_step(void) {
     static const uint8_t upp[1] = { 0x00 };
     static const uint8_t md[1] = { 0x00 };
     static const uint8_t tid[16] = { 0 };
+    static const uint8_t sc[16] = { 0 };
     static const uint8_t otsk[32] = { 0 };
-    int rc = rsp_lpa_install(&t, upp, 1, md, 1, tid, otsk, &res, &res_len,
+    static const char addr[] = "smdp.example.com";
+    int rc = rsp_lpa_install(&t, upp, 1, md, 1, tid, sc, otsk, addr,
+                             &res, &res_len,
                              &step, NULL, NULL);
     t.close(&t);
 

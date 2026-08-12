@@ -450,9 +450,27 @@ int rsp_lpa_install(rsp_transport_t *t,
                     const uint8_t *upp, size_t upp_len,
                     const uint8_t *metadata, size_t metadata_len,
                     const uint8_t transaction_id[16],
+                    const uint8_t server_challenge[16],
                     const uint8_t otsk_dp[32],
+                    const char *server_address,
                     uint8_t **result, size_t *result_len,
                     int *step, int *no_isdr, int *installed);
+/* server_challenge joins transaction_id and otsk_dp as a value the
+   caller supplies rather than one generated inside: production passes
+   fresh random, a test passes a fixed value, and that difference is what
+   makes a recorded session replayable. euicc-rsp says the same at
+   rsp_dp_initiate_authentication, and there is no internal fallback for
+   any of the three.
+
+   server_address is the SM-DP+ address, NUL-terminated. Both roles are
+   in this one process, so there is one address and the two sides agree
+   about it by construction -- it is handed to euicc-rsp as both the
+   server's own address and the one the LPA is said to have sent, and
+   the case-insensitive comparison SGP.22 section 5.6.1 requires
+   therefore always succeeds here. A real LPA talking to a real SM-DP+
+   over a network is where that check earns its keep; this path is not
+   that, and pretending otherwise by inventing a mismatch would test
+   nothing. */
 /* `installed`, if not NULL, is what the eUICC's own signed report says --
    1 for finalResult.successResult, 0 for errorResult -- and is only
    written when this function returns 0, because step 9 is what makes that
