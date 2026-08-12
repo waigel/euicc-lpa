@@ -247,5 +247,56 @@ int main(void) {
         rsp_card_notifications_free(n, count);
     }
 
+    /* ---- RetrieveNotificationsList -----------------------------------
+       The signed half. What matters here is that each notification comes
+       out as the eUICC encoded it: the eUICC signed over those bytes, so
+       a re-encoded decode would be a different message wherever BER and
+       DER disagree. */
+    {
+        rsp_transport_t t;
+        rsp_pending_notification_t *p = NULL;
+        size_t count = 0;
+        long err = 1;
+        int no_isdr = 1;
+
+        ok("the retrieve recording opens",
+           rsp_replay_open("testdata/cards/omnikey-retrieve-notifications.log",
+                           &t) == 0);
+        int rc = rsp_card_retrieve_notifications(&t, &p, &count, &err, &no_isdr);
+        t.close(&t);
+
+        ok("the card answers RetrieveNotificationsList", rc == 0);
+        ok("...with five signed notifications", count == 5);
+        ok("...and neither an error nor a missing ISD-R",
+           err == 0 && no_isdr == 0);
+
+        if (rc == 0 && count == 5) {
+            size_t i;
+            int all_pir = 1;
+            for (i = 0; i < count; i++) {
+                if (p[i].der_len < 2 || p[i].der[0] != 0xBF ||
+                    p[i].der[1] != 0x37) {
+                    all_pir = 0;
+                }
+            }
+            /* PendingNotification is a CHOICE whose first alternative
+               carries [55], so automatic tagging is off for it and the
+               two arms are distinguishable by tag: BF37 for a
+               profileInstallationResult, a plain SEQUENCE for an
+               otherSignedNotification. */
+            ok("every one is a profileInstallationResult (BF37)", all_pir);
+            /* The last two are the network downloads, and 163 is exactly
+               what card install reported as the length of the
+               ProfileInstallationResult it was handed. The queue holds
+               the same bytes -- which is what makes slicing them out the
+               only correct way to carry them. */
+            ok("their lengths are the ones the installs reported",
+               p[0].der_len == 186 && p[4].der_len == 163);
+            ok("each carries its own bytes, not a shared buffer",
+               p[0].der != p[1].der && p[3].der != p[4].der);
+        }
+        rsp_card_pending_free(p, count);
+    }
+
     return fails ? 1 : 0;
 }
