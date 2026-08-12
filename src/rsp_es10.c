@@ -110,6 +110,8 @@
 
 #include "EUICCInfo2.h"
 #include "GetEuiccDataResponse.h"
+#include "ListNotificationResponse.h"
+#include "NotificationMetadata.h"
 #include "ProfileInfoListResponse.h"
 #include "ProfileInfoListError.h"
 #include "ProfileInfo.h"
@@ -709,6 +711,135 @@ static int fill_profile_info(rsp_profile_info_t *dst, const ProfileInfo_t *src)
         }
         dst->have_profile_class = 1;
     }
+    return 0;
+}
+
+/* ListNotificationRequest with its one OPTIONAL member absent: ask for
+   every pending notification rather than filtering by operation. */
+static const uint8_t es10_list_notification_req[] = { 0xBF, 0x28, 0x00 };
+
+/* NotificationEvent is a BIT STRING, and section 5.7.11 says exactly one
+   bit is set in a NotificationMetadata. Report which one, or -1 when the
+   eUICC set none or several -- a value this struct cannot describe, and
+   guessing at it would put a wrong operation in front of a person about
+   to delete something. */
+static int single_event_bit(const BIT_STRING_t *bs)
+{
+    int found = -1;
+    size_t byte;
+    if (!bs || !bs->buf || bs->size <= 0) return -1;
+    for (byte = 0; byte < (size_t)bs->size; byte++) {
+        int bit;
+        for (bit = 0; bit < 8; bit++) {
+            /* The last byte's low bits_unused bits are padding. */
+            if (byte + 1 == (size_t)bs->size && bit >= 8 - bs->bits_unused) {
+                break;
+            }
+            if (bs->buf[byte] & (0x80 >> bit)) {
+                if (found >= 0) return -1;   /* more than one */
+                found = (int)(byte * 8 + (size_t)bit);
+            }
+        }
+    }
+    return found;
+}
+
+void rsp_card_notifications_free(rsp_notification_info_t *n, size_t count)
+{
+    size_t i;
+    if (!n) return;
+    for (i = 0; i < count; i++) free(n[i].notification_address);
+    free(n);
+}
+
+int rsp_card_list_notifications(rsp_transport_t *t,
+                                rsp_notification_info_t **out,
+                                size_t *out_count, long *err, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (err) *err = 0;
+    if (!t || !t->transceive || !out || !out_count) return -2;
+    *out = NULL;
+    *out_count = 0;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    unsigned sw = 0;
+    rc = rsp_es10_send(t, es10_list_notification_req,
+                       sizeof es10_list_notification_req,
+                       &resp, &resp_len, &sw);
+    if (rc != 0) return rc;
+
+    ListNotificationResponse_t *ln = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_ListNotificationResponse,
+                                   (void **)&ln, resp, resp_len);
+    free(resp);
+    if (dr.code != RC_OK || !ln) {
+        if (ln) ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+        return -2;
+    }
+
+    if (ln->present == ListNotificationResponse_PR_listNotificationsResultError) {
+        long code = 0;
+        int fit = asn_INTEGER2long(&ln->choice.listNotificationsResultError,
+                                    &code);
+        if (fit == 0 && err) *err = code;
+        ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+        return fit == 0 ? -1 : -2;
+    }
+    if (ln->present != ListNotificationResponse_PR_notificationMetadataList) {
+        ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+        return -2;
+    }
+
+    size_t n = (size_t)ln->choice.notificationMetadataList.list.count;
+    rsp_notification_info_t *arr = NULL;
+    if (n > 0) {
+        size_t k;
+        arr = calloc(n, sizeof *arr);
+        if (!arr) {
+            ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+            return -2;
+        }
+        for (k = 0; k < n; k++) {
+            NotificationMetadata_t *m =
+                ln->choice.notificationMetadataList.list.array[k];
+            long seq = 0;
+
+            if (!m || asn_INTEGER2long(&m->seqNumber, &seq) != 0) {
+                rsp_card_notifications_free(arr, n);
+                ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+                return -2;
+            }
+            arr[k].seq_number = seq;
+            arr[k].operation = single_event_bit(&m->profileManagementOperation);
+            arr[k].notification_address = dup_utf8string(&m->notificationAddress);
+            if (!arr[k].notification_address) {
+                rsp_card_notifications_free(arr, n);
+                ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+                return -2;
+            }
+            if (m->iccid) {
+                if (m->iccid->size != 10) {
+                    rsp_card_notifications_free(arr, n);
+                    ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+                    return -2;
+                }
+                memcpy(arr[k].iccid, m->iccid->buf, 10);
+                arr[k].have_iccid = 1;
+            }
+        }
+    }
+
+    ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
+    *out = arr;
+    *out_count = n;
     return 0;
 }
 
