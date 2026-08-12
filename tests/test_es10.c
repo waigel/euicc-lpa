@@ -203,5 +203,49 @@ int main(void) {
         t4.close(&t4);
     }
 
+    /* ---- ListNotification -------------------------------------------
+       Replayed from a real card. The queue is where a profile management
+       operation leaves its trace, and the eUICC keeps it until an LPA
+       delivers and says so -- so this fixture also documents what an
+       undelivered queue looks like: three of its five entries name
+       "smdp-address-placeholder.invalid", from before euicc-rsp took a
+       real address, and RFC 2606 guarantees that address never resolves.
+       They cannot be delivered, only removed. */
+    {
+        rsp_transport_t t;
+        rsp_notification_info_t *n = NULL;
+        size_t count = 0;
+        long err = 1;
+        int no_isdr = 1;
+
+        ok("the notification recording opens",
+           rsp_replay_open("testdata/cards/omnikey-notifications.log", &t) == 0);
+        int rc = rsp_card_list_notifications(&t, &n, &count, &err, &no_isdr);
+        t.close(&t);
+
+        ok("the card answers ListNotification", rc == 0);
+        ok("...with five pending notifications", count == 5);
+        ok("...and neither an error nor a missing ISD-R",
+           err == 0 && no_isdr == 0);
+
+        if (rc == 0 && count == 5) {
+            ok("the sequence numbers come out in order",
+               n[0].seq_number == 24 && n[4].seq_number == 28);
+            ok("every one of them is an install",
+               n[0].operation == 0 && n[1].operation == 0 &&
+               n[2].operation == 0 && n[3].operation == 0 &&
+               n[4].operation == 0);
+            ok("the undeliverable ones still name the placeholder they were "
+               "signed with",
+               strcmp(n[0].notification_address,
+                      "smdp-address-placeholder.invalid") == 0);
+            ok("and the later ones name the server that actually answered",
+               strcmp(n[4].notification_address, "127.0.0.1") == 0);
+            ok("the OPTIONAL iccid is present and ten bytes",
+               n[0].have_iccid && n[0].iccid[0] == 0x98 && n[0].iccid[9] == 0x14);
+        }
+        rsp_card_notifications_free(n, count);
+    }
+
     return fails ? 1 : 0;
 }

@@ -1,0 +1,41 @@
+# ListNotification against this project's own test eUICC, captured with
+# rsp_record_open -- a real card, not a hand-built payload.
+#
+# Five pending notifications, and they are a record of this project's own
+# history rather than a contrived fixture:
+#
+#   seq 24-26  notificationAddress "smdp-address-placeholder.invalid"
+#              Installs from before euicc-rsp took a real SM-DP+ address.
+#              RFC 2606 reserves .invalid so that it can never resolve,
+#              which means these three can never be delivered and will
+#              sit in the queue until something removes them explicitly.
+#              That is what a placeholder costs once a card has seen it.
+#   seq 27-28  notificationAddress "127.0.0.1"
+#              Downloads from a real SM-DP+ over ES9+.
+#
+# Every entry is an install. The eUICC generates those regardless; enable,
+# disable and delete are only reported when the Profile's own
+# notificationConfigurationInfo asks for them, and the metadata
+# euicc-tools builds deliberately leaves that field out.
+#
+# What this fixture pins: the list decodes, seqNumber and the
+# NotificationEvent bit come out, the OPTIONAL iccid is present, and the
+# address is carried as written.
+# A euicc-lpa session, recorded by rsp_record_open: one line per
+# direction, hex APDUs (see this project's src/rsp_transport.c for the
+# exact format). This is a log, not something to run.
+#
+# Whether this file is safe to share depends on what was asked of the
+# card during the session it captures, and this header cannot know
+# that in general -- a read-only query (EID, versions, key
+# identifiers) is public; a write session (installing, enabling,
+# deleting a profile) can carry protected material. Check what is
+# actually below before pasting this into an issue.
+> 00A4040010A0000005591010FFFFFFFF890000010000
+< 6121
+> 00C0000021
+< 6F1F8410A0000005591010FFFFFFFF8900000100A5049F6501FFE00582030202009000
+> 80E2910003BF280000
+< 61F1
+> 00C00000F1
+< BF2881EDA081EABF2F35800118810207800C20736D64702D616464726573732D706C616365686F6C6465722E696E76616C69645A0A98001032547698103214BF2F35800119810207800C20736D64702D616464726573732D706C616365686F6C6465722E696E76616C69645A0A98001032547698103214BF2F3580011A810207800C20736D64702D616464726573732D706C616365686F6C6465722E696E76616C69645A0A98001032547698103214BF2F1E80011B810207800C093132372E302E302E315A0A98001032547698103214BF2F1E80011C810207800C093132372E302E302E315A0A980010325476981032149000

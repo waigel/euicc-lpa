@@ -204,6 +204,51 @@ typedef struct {
     int     have_profile_class;
 } rsp_profile_info_t;
 
+/* One entry of the eUICC's notification queue, as ListNotification
+   reports it (SGP.22 v2.6 section 5.7.11, NotificationMetadata).
+
+   This is the unsigned half. The eUICC signs the notification itself,
+   and that signature only comes with RetrieveNotificationsList; what is
+   here is the index a person or an LPA reads to decide what to fetch and
+   where to send it. Nothing in it is evidence of anything. */
+typedef struct {
+    long     seq_number;
+    /* Which operation produced it. A NotificationEvent is a BIT STRING
+       and section 5.7.11 says only one bit is ever set here, so it is
+       reported as that bit's number: 0 install, 1 enable, 2 disable,
+       3 delete. -1 when the eUICC set none or more than one, which is
+       not something this struct can represent honestly. */
+    int      operation;
+    /* The FQDN the notification has to be delivered to, NUL-terminated.
+       It is the eUICC's, not the LPA's, choice -- it comes from the
+       Profile's own notificationConfigurationInfo. */
+    char    *notification_address;
+    uint8_t  iccid[10];
+    int      have_iccid;        /* iccid is OPTIONAL in the metadata */
+} rsp_notification_info_t;
+
+/* Ask the eUICC what is waiting in its notification queue (ES10b
+   ListNotification, SGP.22 v2.6 section 5.7.11). Every profile
+   management operation leaves one behind, and they stay until an LPA
+   delivers them and says so -- so a queue that only grows is a queue
+   nobody has been draining.
+
+   *out is malloc'ed on success, an array of *out_count entries, released
+   with rsp_card_notifications_free. An empty queue is 0 with *out_count
+   0 and *out NULL: a complete answer, not a failure to find anything.
+
+   Returns 0, or -1 when the card answered and refused, with *err set to
+   which refusal (listNotificationsResultError; undefinedError(127) is
+   the only one the module names). -2 when the exchange could not happen
+   or the answer could not be decoded. no_isdr follows
+   rsp_card_read_info's convention. */
+int rsp_card_list_notifications(rsp_transport_t *t,
+                                rsp_notification_info_t **out,
+                                size_t *out_count, long *err, int *no_isdr);
+
+/* Release an array from rsp_card_list_notifications. Safe on NULL. */
+void rsp_card_notifications_free(rsp_notification_info_t *n, size_t count);
+
 /* Select the ISD-R, then ask for every installed profile
    (ProfileInfoListRequest with every member absent, SGP.22 v2.6 section
    5.7.15 -- an empty body asks for all of them, not none: 'BF2D 00' is
