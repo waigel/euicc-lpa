@@ -470,6 +470,36 @@ int rsp_card_load_bpp(rsp_transport_t *t, const uint8_t *bpp, size_t bpp_len,
    than the ok one. -2 means it could not be understood at all: a null
    argument, an encoding that is not the expected type, or an allocation
    failure. On either, *out / *out_len are untouched. */
+/* The same two, for a caller holding the fields separately rather than
+   the whole encoding -- which is how the JSON binding of section 6.5
+   delivers them.
+   
+   transaction_id is the raw value, not a TLV: it crosses the JSON
+   binding as hexadecimal rather than as an encoded field, so it is the
+   one that has to be given its tag here. The other four are each a
+   complete TLV, tag and length included, exactly as
+   rsp_dp_initiate_fields and rsp_dp_authenticate_fields in euicc-rsp cut
+   them out. They are copied whole and never decoded: serverSigned1 and
+   smdpSigned2 carry bytes an eUICC verifies a signature over.
+   
+   Return values are those of the two functions above, which these call
+   once the envelope is back. */
+int rsp_lpa_repack_authenticate_server_fields(
+        const uint8_t *transaction_id, size_t transaction_id_len,
+        const uint8_t *server_signed1, size_t server_signed1_len,
+        const uint8_t *server_signature1, size_t server_signature1_len,
+        const uint8_t *euicc_ci_pkid, size_t euicc_ci_pkid_len,
+        const uint8_t *server_certificate, size_t server_certificate_len,
+        uint8_t **out, size_t *out_len);
+
+int rsp_lpa_repack_prepare_download_fields(
+        const uint8_t *transaction_id, size_t transaction_id_len,
+        const uint8_t *profile_metadata, size_t profile_metadata_len,
+        const uint8_t *smdp_signed2, size_t smdp_signed2_len,
+        const uint8_t *smdp_signature2, size_t smdp_signature2_len,
+        const uint8_t *smdp_certificate, size_t smdp_certificate_len,
+        uint8_t **out, size_t *out_len);
+
 int rsp_lpa_repack_authenticate_server(const uint8_t *es9, size_t es9_len,
                                        uint8_t **out, size_t *out_len);
 
