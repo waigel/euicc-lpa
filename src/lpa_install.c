@@ -114,6 +114,147 @@ static int growbuf_sink(const void *buf, size_t n, void *key)
     return rsp_growbuf_append((rsp_growbuf_t *)key, buf, n);
 }
 
+/* Put an outer tag and a DER length back around fields that already are
+ * complete TLVs.
+ *
+ * The JSON binding of SGP.22 section 6.5 sends an ES9+ answer as
+ * separately encoded fields, and the repackers below want the encoding
+ * the SM-DP+ produced. Nothing here decodes or re-encodes a field: they
+ * are copied whole, because smdpSigned2 and serverSigned1 carry bytes an
+ * eUICC verifies a signature over, and a decode-then-encode could change
+ * them where BER and DER disagree.
+ *
+ * Definite, minimal lengths -- the same rule euicc-rsp encodes with, so
+ * the result is byte-identical to what it produced. */
+static int wrap_tlv(const uint8_t *tag, size_t tag_len,
+                    const uint8_t *const *fields, const size_t *lens,
+                    size_t n, uint8_t **out, size_t *out_len)
+{
+    size_t body = 0, i, o;
+    uint8_t len_oct[8];
+    size_t len_n;
+    uint8_t *b;
+
+    for (i = 0; i < n; i++) {
+        if (!fields[i]) return -2;
+        body += lens[i];
+    }
+    if (rsp_der_length_octets(body, len_oct, &len_n) != 0) return -2;
+
+    b = malloc(tag_len + len_n + body);
+    if (!b) return -2;
+    memcpy(b, tag, tag_len);
+    o = tag_len;
+    memcpy(b + o, len_oct, len_n);
+    o += len_n;
+    for (i = 0; i < n; i++) {
+        memcpy(b + o, fields[i], lens[i]);
+        o += lens[i];
+    }
+    *out = b;
+    *out_len = o;
+    return 0;
+}
+
+/* The tags the two envelopes need, and why they differ.
+ *
+ * rsp-2.5.asn is AUTOMATIC TAGS. Automatic tagging is switched off for a
+ * SEQUENCE or CHOICE as soon as any one of its components carries a tag
+ * of its own, which is why two structures in one module follow different
+ * rules:
+ *
+ *   InitiateAuthenticationOkEs9 is a bare SEQUENCE and is what
+ *   euicc-rsp hands back, so its envelope is a plain '30'. Its
+ *   transactionId is [0] over an OCTET STRING with automatic tagging
+ *   off (serverSignature1 is [APPLICATION 55]), so implicit, primitive:
+ *   '80'.
+ *
+ *   AuthenticateClientResponseEs9 is the CHOICE, 'BF3B', and its two
+ *   alternatives carry no tags at all -- so X.680 numbers them and
+ *   authenticateClientOk is reached as [0] over a SEQUENCE: constructed,
+ *   'A0'. A plain '30' there looks right, encodes to the same length,
+ *   and is refused. */
+static const uint8_t TAG_TRANSACTION_ID[1] = { 0x80 };
+static const uint8_t TAG_SEQUENCE[1]       = { 0x30 };
+static const uint8_t TAG_OK_ARM[1]         = { 0xa0 };
+static const uint8_t TAG_AUTH_CLIENT_ES9[2] = { 0xbf, 0x3b };
+
+int rsp_lpa_repack_authenticate_server_fields(
+        const uint8_t *transaction_id, size_t transaction_id_len,
+        const uint8_t *server_signed1, size_t server_signed1_len,
+        const uint8_t *server_signature1, size_t server_signature1_len,
+        const uint8_t *euicc_ci_pkid, size_t euicc_ci_pkid_len,
+        const uint8_t *server_certificate, size_t server_certificate_len,
+        uint8_t **out, size_t *out_len)
+{
+    const uint8_t *f[5];
+    size_t l[5];
+    uint8_t *tid = NULL, *ok = NULL;
+    size_t tid_len = 0, ok_len = 0;
+    int ret;
+
+    if (!transaction_id || !out || !out_len) return -2;
+    if (wrap_tlv(TAG_TRANSACTION_ID, 1, &transaction_id, &transaction_id_len,
+                 1, &tid, &tid_len) != 0) {
+        return -2;
+    }
+
+    f[0] = tid;                l[0] = tid_len;
+    f[1] = server_signed1;     l[1] = server_signed1_len;
+    f[2] = server_signature1;  l[2] = server_signature1_len;
+    f[3] = euicc_ci_pkid;      l[3] = euicc_ci_pkid_len;
+    f[4] = server_certificate; l[4] = server_certificate_len;
+
+    ret = wrap_tlv(TAG_SEQUENCE, 1, f, l, 5, &ok, &ok_len);
+    free(tid);
+    if (ret != 0) return -2;
+
+    ret = rsp_lpa_repack_authenticate_server(ok, ok_len, out, out_len);
+    free(ok);
+    return ret;
+}
+
+int rsp_lpa_repack_prepare_download_fields(
+        const uint8_t *transaction_id, size_t transaction_id_len,
+        const uint8_t *profile_metadata, size_t profile_metadata_len,
+        const uint8_t *smdp_signed2, size_t smdp_signed2_len,
+        const uint8_t *smdp_signature2, size_t smdp_signature2_len,
+        const uint8_t *smdp_certificate, size_t smdp_certificate_len,
+        uint8_t **out, size_t *out_len)
+{
+    const uint8_t *f[5];
+    size_t l[5];
+    uint8_t *tid = NULL, *arm = NULL, *choice = NULL;
+    size_t tid_len = 0, arm_len = 0, choice_len = 0;
+    int ret;
+
+    if (!transaction_id || !out || !out_len) return -2;
+    if (wrap_tlv(TAG_TRANSACTION_ID, 1, &transaction_id, &transaction_id_len,
+                 1, &tid, &tid_len) != 0) {
+        return -2;
+    }
+
+    f[0] = tid;               l[0] = tid_len;
+    f[1] = profile_metadata;  l[1] = profile_metadata_len;
+    f[2] = smdp_signed2;      l[2] = smdp_signed2_len;
+    f[3] = smdp_signature2;   l[3] = smdp_signature2_len;
+    f[4] = smdp_certificate;  l[4] = smdp_certificate_len;
+
+    ret = wrap_tlv(TAG_OK_ARM, 1, f, l, 5, &arm, &arm_len);
+    free(tid);
+    if (ret != 0) return -2;
+
+    ret = wrap_tlv(TAG_AUTH_CLIENT_ES9, 2,
+                   (const uint8_t *const *)&arm, &arm_len, 1,
+                   &choice, &choice_len);
+    free(arm);
+    if (ret != 0) return -2;
+
+    ret = rsp_lpa_repack_prepare_download(choice, choice_len, out, out_len);
+    free(choice);
+    return ret;
+}
+
 int rsp_lpa_repack_authenticate_server(const uint8_t *es9, size_t es9_len,
                                        uint8_t **out, size_t *out_len)
 {
