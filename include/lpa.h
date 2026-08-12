@@ -249,6 +249,57 @@ int rsp_card_list_notifications(rsp_transport_t *t,
 /* Release an array from rsp_card_list_notifications. Safe on NULL. */
 void rsp_card_notifications_free(rsp_notification_info_t *n, size_t count);
 
+/* One pending notification, as RetrieveNotificationsList hands it over
+   (SGP.22 v2.6 section 5.7.12).
+
+   der is the PendingNotification exactly as the eUICC encoded it, not a
+   re-encoding of a decode. That is the whole point: the eUICC signed
+   over these bytes, and BER and DER disagree in places a round trip
+   would silently normalise -- so what gets delivered has to be what
+   arrived. euicc-rsp learned the same lesson at
+   rsp_dp_verify_installation_result.
+
+   meta is decoded alongside, for routing and for showing a person. It
+   is not evidence; the signature inside der is. */
+typedef struct {
+    rsp_notification_info_t meta;
+    uint8_t *der;
+    size_t   der_len;
+} rsp_pending_notification_t;
+
+/* Fetch the signed notifications themselves (ES10b
+   RetrieveNotificationsList, SGP.22 v2.6 section 5.7.12).
+
+   This does not remove anything. The eUICC keeps a notification until
+   rsp_card_notification_sent says it was delivered, which is what makes
+   a failed delivery recoverable rather than a silent loss.
+
+   Returns 0, or -1 when the card answered and refused, with *err set to
+   which (noResultAvailable(1) or undefinedError(127)). -2 when the
+   exchange could not happen or the answer could not be made sense of.
+   An empty queue is the card's own noResultAvailable, so it arrives as
+   -1 with *err 1 rather than as an empty list. */
+int rsp_card_retrieve_notifications(rsp_transport_t *t,
+                                    rsp_pending_notification_t **out,
+                                    size_t *out_count, long *err,
+                                    int *no_isdr);
+
+void rsp_card_pending_free(rsp_pending_notification_t *p, size_t count);
+
+/* Tell the eUICC a notification was delivered, so it can drop it (ES10b
+   RemoveNotificationFromList, whose message is NotificationSentRequest,
+   SGP.22 v2.6 section 5.7.13).
+
+   Only after delivery. A notification removed without being delivered
+   is gone: the eUICC has no second copy, and the SM-DP+ never learns
+   what happened to its Profile.
+
+   *result, when not NULL, receives deleteNotificationStatus on a -1:
+   ok(0) never appears there, nothingToDelete(1), undefinedError(127).
+   Returns 0, -1 when the card answered and refused, -2 otherwise. */
+int rsp_card_notification_sent(rsp_transport_t *t, long seq_number,
+                               long *result, int *no_isdr);
+
 /* Select the ISD-R, then ask for every installed profile
    (ProfileInfoListRequest with every member absent, SGP.22 v2.6 section
    5.7.15 -- an empty body asks for all of them, not none: 'BF2D 00' is

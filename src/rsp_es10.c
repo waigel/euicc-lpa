@@ -111,6 +111,9 @@
 #include "EUICCInfo2.h"
 #include "GetEuiccDataResponse.h"
 #include "ListNotificationResponse.h"
+#include "NotificationSentRequest.h"
+#include "NotificationSentResponse.h"
+#include "RetrieveNotificationsListResponse.h"
 #include "NotificationMetadata.h"
 #include "ProfileInfoListResponse.h"
 #include "ProfileInfoListError.h"
@@ -840,6 +843,269 @@ int rsp_card_list_notifications(rsp_transport_t *t,
     ASN_STRUCT_FREE(asn_DEF_ListNotificationResponse, ln);
     *out = arr;
     *out_count = n;
+    return 0;
+}
+
+/* RetrieveNotificationsListRequest with searchCriteria absent: every
+   pending notification, not a filtered subset. Filtering is the caller's
+   business -- it already has the list from ListNotification. */
+static const uint8_t es10_retrieve_notifications_req[] = { 0xBF, 0x2B, 0x00 };
+
+/* Parse the TLV at off: *val_off / *val_len are its value, *next_off
+ * where the next one begins.
+ *
+ * Needed because a PendingNotification has to be delivered as the eUICC
+ * encoded it -- the eUICC signed over those bytes, and re-encoding a
+ * decode would normalise anything where BER and DER disagree. The
+ * generated codec can say what a structure means but not where it sat,
+ * so finding the boundary is done here.
+ *
+ * This only walks. It reads the tag's length and the length's length out
+ * of the encoding and never assumes a tag value, which is the whole
+ * difference between this and building a structure by hand. Returns 0,
+ * or -1 when the buffer runs out or the length is the indefinite form
+ * DER forbids. */
+static int es10_parse_tlv(const uint8_t *buf, size_t end, size_t off,
+                          size_t *val_off, size_t *val_len, size_t *next_off)
+{
+    size_t p = off, len = 0;
+
+    if (p >= end) return -1;
+    if ((buf[p] & 0x1f) == 0x1f) {          /* multi-byte tag */
+        p++;
+        while (p < end && (buf[p] & 0x80)) p++;
+        if (p >= end) return -1;
+    }
+    p++;
+    if (p >= end) return -1;
+
+    if (buf[p] < 0x80) {
+        len = buf[p];
+        p++;
+    } else {
+        size_t n = (size_t)(buf[p] & 0x7f), i;
+        p++;
+        if (n == 0 || n > sizeof(size_t) || n > end - p) return -1;
+        for (i = 0; i < n; i++) len = (len << 8) | buf[p + i];
+        p += n;
+    }
+    if (len > end - p) return -1;
+
+    *val_off = p;
+    *val_len = len;
+    *next_off = p + len;
+    return 0;
+}
+
+/* Take the whole TLV at *off -- tag and length included -- and move *off
+   past it. */
+static int es10_take_tlv(const uint8_t *buf, size_t end, size_t *off,
+                         const uint8_t **tlv, size_t *tlv_len)
+{
+    size_t v_off, v_len, next;
+
+    if (es10_parse_tlv(buf, end, *off, &v_off, &v_len, &next) != 0) return -1;
+    *tlv = buf + *off;
+    *tlv_len = next - *off;
+    *off = next;
+    return 0;
+}
+
+/* Descend into the value of the TLV at off. */
+static int es10_enter_tlv(const uint8_t *buf, size_t end, size_t off,
+                          size_t *inner_off, size_t *inner_end)
+{
+    size_t v_off, v_len, next;
+
+    if (es10_parse_tlv(buf, end, off, &v_off, &v_len, &next) != 0) return -1;
+    *inner_off = v_off;
+    *inner_end = v_off + v_len;
+    return 0;
+}
+
+/* der_encode wants a callback; rsp_growbuf_t wants an append. */
+static int es10_growbuf_sink(const void *buf, size_t n, void *key)
+{
+    return rsp_growbuf_append((rsp_growbuf_t *)key, buf, n);
+}
+
+void rsp_card_pending_free(rsp_pending_notification_t *p, size_t count)
+{
+    size_t i;
+    if (!p) return;
+    for (i = 0; i < count; i++) {
+        free(p[i].meta.notification_address);
+        free(p[i].der);
+    }
+    free(p);
+}
+
+int rsp_card_retrieve_notifications(rsp_transport_t *t,
+                                    rsp_pending_notification_t **out,
+                                    size_t *out_count, long *err,
+                                    int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (err) *err = 0;
+    if (!t || !t->transceive || !out || !out_count) return -2;
+    *out = NULL;
+    *out_count = 0;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    unsigned sw = 0;
+    rc = rsp_es10_send(t, es10_retrieve_notifications_req,
+                       sizeof es10_retrieve_notifications_req,
+                       &resp, &resp_len, &sw);
+    if (rc != 0) return rc;
+
+    RetrieveNotificationsListResponse_t *rn = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL,
+                                   &asn_DEF_RetrieveNotificationsListResponse,
+                                   (void **)&rn, resp, resp_len);
+    if (dr.code != RC_OK || !rn) {
+        if (rn) ASN_STRUCT_FREE(asn_DEF_RetrieveNotificationsListResponse, rn);
+        free(resp);
+        return -2;
+    }
+
+    if (rn->present ==
+        RetrieveNotificationsListResponse_PR_notificationsListResultError) {
+        long code = 0;
+        int fit = asn_INTEGER2long(&rn->choice.notificationsListResultError,
+                                    &code);
+        if (fit == 0 && err) *err = code;
+        ASN_STRUCT_FREE(asn_DEF_RetrieveNotificationsListResponse, rn);
+        free(resp);
+        return fit == 0 ? -1 : -2;
+    }
+    if (rn->present != RetrieveNotificationsListResponse_PR_notificationList) {
+        ASN_STRUCT_FREE(asn_DEF_RetrieveNotificationsListResponse, rn);
+        free(resp);
+        return -2;
+    }
+
+    size_t n = (size_t)rn->choice.notificationList.list.count;
+    rsp_pending_notification_t *arr = NULL;
+    int failed = 0;
+
+    if (n > 0) {
+        size_t k, off = 0, end = 0;
+
+        arr = calloc(n, sizeof *arr);
+        if (!arr) failed = 1;
+
+        /* Walk the received bytes alongside the decode: BF2B wraps the
+           CHOICE's chosen arm, notificationList, whose contents are the
+           PendingNotifications themselves. */
+        if (!failed && es10_enter_tlv(resp, resp_len, 0, &off, &end) != 0) {
+            failed = 1;
+        }
+        if (!failed) {
+            size_t list_off = 0, list_end = 0;
+            if (es10_enter_tlv(resp, end, off, &list_off, &list_end) != 0) {
+                failed = 1;
+            } else {
+                off = list_off;
+                end = list_end;
+            }
+        }
+
+        for (k = 0; !failed && k < n; k++) {
+            const uint8_t *tlv = NULL;
+            size_t tlv_len = 0;
+
+            if (es10_take_tlv(resp, end, &off, &tlv, &tlv_len) != 0) {
+                failed = 1;
+                break;
+            }
+            arr[k].der = malloc(tlv_len);
+            if (!arr[k].der) { failed = 1; break; }
+            memcpy(arr[k].der, tlv, tlv_len);
+            arr[k].der_len = tlv_len;
+            arr[k].meta.operation = -1;
+        }
+    }
+
+    ASN_STRUCT_FREE(asn_DEF_RetrieveNotificationsListResponse, rn);
+    free(resp);
+    if (failed) {
+        rsp_card_pending_free(arr, n);
+        return -2;
+    }
+    *out = arr;
+    *out_count = n;
+    return 0;
+}
+
+int rsp_card_notification_sent(rsp_transport_t *t, long seq_number,
+                               long *result, int *no_isdr)
+{
+    if (no_isdr) *no_isdr = 0;
+    if (result) *result = 0;
+    if (!t || !t->transceive || seq_number < 0) return -2;
+
+    int rc = rsp_card_select_isdr(t);
+    if (rc != 0) {
+        if (rc == -1 && no_isdr) *no_isdr = 1;
+        return rc;
+    }
+
+    /* Built with the generated codec rather than by hand: seqNumber's
+       own tag comes from its position in the SEQUENCE, and rsp-2.5.asn
+       is AUTOMATIC TAGS, so it is not something to write out from
+       reading the module. */
+    uint8_t req[32];
+    size_t req_len = 0;
+    {
+        NotificationSentRequest_t r;
+        rsp_growbuf_t g = { 0 };
+        memset(&r, 0, sizeof r);
+        if (asn_long2INTEGER(&r.seqNumber, seq_number) != 0) {
+            ASN_STRUCT_RESET(asn_DEF_NotificationSentRequest, &r);
+            return -2;
+        }
+        asn_enc_rval_t er = der_encode(&asn_DEF_NotificationSentRequest, &r,
+                                        es10_growbuf_sink, &g);
+        ASN_STRUCT_RESET(asn_DEF_NotificationSentRequest, &r);
+        if (er.encoded < 0 || g.len == 0 || g.len > sizeof req) {
+            rsp_growbuf_free(&g);
+            return -2;
+        }
+        memcpy(req, g.buf, g.len);
+        req_len = g.len;
+        rsp_growbuf_free(&g);
+    }
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    unsigned sw = 0;
+    rc = rsp_es10_send(t, req, req_len, &resp, &resp_len, &sw);
+    if (rc != 0) return rc;
+
+    NotificationSentResponse_t *ns = NULL;
+    asn_dec_rval_t dr = ber_decode(NULL, &asn_DEF_NotificationSentResponse,
+                                   (void **)&ns, resp, resp_len);
+    free(resp);
+    if (dr.code != RC_OK || !ns) {
+        if (ns) ASN_STRUCT_FREE(asn_DEF_NotificationSentResponse, ns);
+        return -2;
+    }
+
+    long status = 0;
+    int fit = asn_INTEGER2long(&ns->deleteNotificationStatus, &status);
+    ASN_STRUCT_FREE(asn_DEF_NotificationSentResponse, ns);
+    if (fit != 0) return -2;
+    if (status != 0) {
+        if (result) *result = status;
+        return -1;
+    }
     return 0;
 }
 
