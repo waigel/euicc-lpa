@@ -446,6 +446,36 @@ int rsp_card_load_bpp(rsp_transport_t *t, const uint8_t *bpp, size_t bpp_len,
    a session stranded by a crash: CancelSession needs the matching
    transactionId, which a fresh run does not know, and then the card has
    to be re-seated. */
+/* Repack an ES9+ answer into the ES10b request that carries it to the
+   eUICC. Two of them, one per step, and both are the LPA's own job: the
+   SM-DP+ answers in the shape SGP.22 gives its own interface, and the
+   card expects a different one with a subset of the same fields.
+
+   rsp_lpa_install calls both itself, so a caller that uses it needs
+   neither. They are public for the caller that cannot: one talking to a
+   real SM-DP+ over ES9+, where the two steps are separated by a network
+   round trip and the download is driven a step at a time rather than in
+   one call.
+
+   es9 is the encoded ES9+ response -- an InitiateAuthenticationOkEs9 for
+   the first, an AuthenticateClientResponseEs9 for the second. A caller
+   holding the fields separately (the JSON binding of section 6.5 sends
+   them that way) can reassemble that encoding by wrapping the fields'
+   own TLVs in the outer tag and length; they are carried whole, so the
+   result is byte-identical to what the SM-DP+ encoded.
+
+   On success (0), *out / *out_len receive the encoded ES10b request,
+   malloc'ed, owned by the caller. -1 means the answer was understood and
+   refused -- the ES9+ response decodes but carries an error arm rather
+   than the ok one. -2 means it could not be understood at all: a null
+   argument, an encoding that is not the expected type, or an allocation
+   failure. On either, *out / *out_len are untouched. */
+int rsp_lpa_repack_authenticate_server(const uint8_t *es9, size_t es9_len,
+                                       uint8_t **out, size_t *out_len);
+
+int rsp_lpa_repack_prepare_download(const uint8_t *es9, size_t es9_len,
+                                    uint8_t **out, size_t *out_len);
+
 int rsp_lpa_install(rsp_transport_t *t,
                     const uint8_t *upp, size_t upp_len,
                     const uint8_t *metadata, size_t metadata_len,
